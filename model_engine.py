@@ -10,47 +10,74 @@ class FaceEngine:
 
     def __init__(self, config):
         """Loads YOLOv8-face model and configuration."""
+        # Automatyczny wybór urządzenia
+
         self.config = config
         self.detector = YOLO(config.YOLO_MODEL_PATH)
 
     def extract_face_data(self, image_path):
-        """Detects faces and extracts their feature embeddings."""
+        """Detects faces and extracts their feature embeddings with padding and high-quality crops."""
         img = cv2.imread(image_path)
         if img is None:
             return []
 
         results = self.detector(image_path, conf=self.config.CONFIDENCE_THRESHOLD, verbose=False)[0]
         faces_data = []
-        h, w, _ = img.shape
+        img_h, img_w, _ = img.shape
+
+        # Inicjalizacja CLAHE (lepsze niż equalizeHist, bo działa lokalnie)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+        # Inicjalizacja HOG (wyciąga krawędzie, ignoruje oświetlenie globalne)
+        hog = cv2.HOGDescriptor((64, 64), (16, 16), (8, 8), (8, 8), 9)
 
         for i, box in enumerate(results.boxes):
-            coords = box.xyxy[0].cpu().numpy().astype(int)
+            coords = box.xyxy[0].cpu().numpy()
             x1, y1, x2, y2 = coords
-            x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+
+            # 1. DODAWANIE MARGINESU (Padding 20%)
+            # Zapobiega "ciasnym" i niewyraźnym cropom
+            w_box = x2 - x1
+            h_box = y2 - y1
+            padding = 0.2
+
+            x1 = max(0, int(x1 - w_box * padding))
+            y1 = max(0, int(y1 - h_box * padding))
+            x2 = min(img_w, int(x2 + w_box * padding))
+            y2 = min(img_h, int(y2 + h_box * padding))
 
             face_crop = img[y1:y2, x1:x2]
             if face_crop.size == 0: continue
 
-            # Ulepszony preprocessing (LBP lub Histogramy byłyby lepsze,
-            # ale zostańmy przy resize + normalizacja dla stabilności)
-            resized = cv2.resize(face_crop, (128, 128))
-            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-            # Wyrównanie histogramu pomaga przy różnym oświetleniu
-            gray = cv2.equalizeHist(gray)
-            embedding = gray.flatten().astype(np.float32) / 255.0
+            # 2. WYSOKA JAKOŚĆ WYCINKA DLA GUI
+            # Resizing z interpolacją Lanczos dla lepszej ostrości
+            # Możesz zwiększyć do 256, jeśli chcesz mieć bardzo wyraźne miniatury
+            display_crop = cv2.resize(face_crop, (160, 160), interpolation=cv2.INTER_LANCZOS4)
+
+            # 3. PREPROCESSING DLA EMBEDDINGU (ZMIANA NA HOG)
+            resized_gray = cv2.resize(face_crop, (64, 64), interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(resized_gray, cv2.COLOR_BGR2GRAY)
+            gray = clahe.apply(gray)
+
+            # Obliczanie wektora cech HOG
+            embedding = hog.compute(gray).flatten().astype(np.float32)
+
+            # Normalizacja wektora (kluczowe dla metryki cosine w DBSCAN)
+            embedding = embedding / (np.linalg.norm(embedding) + 1e-6)
 
             faces_data.append({
-                "crop": face_crop,
+                "crop": display_crop,
                 "bbox": [int(x1), int(y1), int(x2), int(y2)],
                 "embedding": embedding.tolist()
             })
+
         return faces_data
 
 
     def get_face_clusters(self, embeddings, fids):
         # eps: odległość (kluczowy parametr, zacznij od 0.5)
         # min_samples: ile zdjęć musi być blisko siebie, by uznać to za grupę
-        dbscan = DBSCAN(eps=0.5, min_samples=3, metric='cosine')
+        dbscan = DBSCAN(eps=0.42, min_samples=4, metric='cosine')
         labels = dbscan.fit_predict(embeddings)
 
         clusters = {}

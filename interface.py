@@ -134,7 +134,7 @@ class FaceInterface(QMainWindow):
         self.lbl_stats.setText(f"Załadowane twarze: {len(face_data_list)}")
 
     def bulk_verify_faces(self, face_ids):
-        """ Pozostawiamy bez zmian - wyskakujące okno dla DBSCAN """
+        """ Okno dialogowe dla DBSCAN z blokadą pustego imienia """
         self.final_selection = []
         self.bulk_name = ""
         dialog = QDialog(self)
@@ -142,11 +142,19 @@ class FaceInterface(QMainWindow):
         dialog.setMinimumSize(900, 700)
         dialog_layout = QVBoxLayout(dialog)
 
+        # 1. Pole wprowadzania imienia
         self.bulk_input = QLineEdit()
-        self.bulk_input.setPlaceholderText("Wpisz imię dla tej grupy...")
-        self.bulk_input.setStyleSheet("padding: 10px; font-size: 16px; background-color: #333; color: white;")
+        self.bulk_input.setPlaceholderText("Wpisz imię dla tej grupy (WYMAGANE)...")
+        self.bulk_input.setStyleSheet("""
+            padding: 10px; 
+            font-size: 16px; 
+            background-color: #333; 
+            color: white; 
+            border: 2px solid #555;
+        """)
         dialog_layout.addWidget(self.bulk_input)
 
+        # 2. Obszar z twarzami
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         grid_widget = QWidget()
@@ -159,7 +167,7 @@ class FaceInterface(QMainWindow):
             img_label = QLabel()
             pixmap = QPixmap(face_path)
             if not pixmap.isNull():
-                img_label.setPixmap(pixmap.scaled(140, 140, Qt.KeepAspectRatio))
+                img_label.setPixmap(pixmap.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
             chk = QCheckBox("To ta osoba")
             chk.setChecked(True)
@@ -167,6 +175,7 @@ class FaceInterface(QMainWindow):
             container.addWidget(chk, alignment=Qt.AlignCenter)
 
             frame = QFrame()
+            frame.setStyleSheet("background-color: #3d3d3d; border-radius: 5px;")
             frame.setLayout(container)
             inner_grid.addWidget(frame, i // 4, i % 4)
             check_boxes[fid] = chk
@@ -174,18 +183,39 @@ class FaceInterface(QMainWindow):
         scroll.setWidget(grid_widget)
         dialog_layout.addWidget(scroll)
 
+        # 3. Przycisk zatwierdzenia z blokadą
         btn_confirm = QPushButton("Zatwierdź grupę")
-        btn_confirm.setStyleSheet("background-color: #28a745; height: 40px; font-weight: bold;")
-        btn_confirm.clicked.connect(lambda: dialog.accept())
+        # Domyślnie wyłączamy przycisk i nadajemy mu styl "zablokowany"
+        btn_confirm.setEnabled(False)
+        btn_confirm.setStyleSheet("""
+            QPushButton:disabled { background-color: #444; color: #888; }
+            QPushButton:enabled { background-color: #28a745; color: white; font-weight: bold; }
+            height: 40px;
+        """)
+
+        # Funkcja sprawdzająca czy pole nie jest puste
+        def validate_bulk_input():
+            is_valid = len(self.bulk_input.text().strip()) > 0
+            btn_confirm.setEnabled(is_valid)
+            if is_valid:
+                self.bulk_input.setStyleSheet(
+                    "padding: 10px; font-size: 16px; background-color: #333; color: white; border: 2px solid #28a745;")
+            else:
+                self.bulk_input.setStyleSheet(
+                    "padding: 10px; font-size: 16px; background-color: #333; color: white; border: 2px solid #555;")
+
+        self.bulk_input.textChanged.connect(validate_bulk_input)
+
+        btn_confirm.clicked.connect(dialog.accept)
         dialog_layout.addWidget(btn_confirm)
 
         if dialog.exec_() == QDialog.Accepted:
             self.bulk_name = self.bulk_input.text().strip()
             self.final_selection = [fid for fid, chk in check_boxes.items() if chk.isChecked()]
             return self.final_selection, self.bulk_name
+
         return None, None
 
-    # --- Paski postępu pozostają bez zmian ---
     def show_startup_progress(self, total):
         self.progress_dialog = QProgressDialog("Analizowanie bazy...", "Anuluj", 0, total)
         self.progress_dialog.setWindowModality(Qt.ApplicationModal)

@@ -114,3 +114,8 @@ class FaceDatabase:
             print("Baza danych została wyczyszczona.")
         except Exception as e:
             print(f"Błąd podczas czyszczenia bazy: {e}")
+
+    # def mark_as_processed(self, image_path):
+    #     """Zapisuje ścieżkę do bazy, aby nie skanować zdjęcia ponownie."""
+    #     self.cursor.execute("INSERT OR IGNORE INTO processed_images (path) VALUES (?)", (image_path,))
+    #     self.conn.commit()

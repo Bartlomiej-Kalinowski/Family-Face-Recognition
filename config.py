@@ -3,7 +3,8 @@ import os
 class Config:
     """Project configuration constants."""
     YOLO_MODEL_PATH = './face_detection_model/yolov8n-face.pt'
-    SOURCE_DIR = "./WIDER_train" # "./datasetFIW/train"
+    # SOURCE_DIR = "./WIDER_train" # "./datasetFIW/train"
+    SOURCE_DIR = "C:/Users/Kalin/PycharmProjects/LIC/da_images"
     OUTPUT_DIR = "./output_data"
 
     ANNOTATED_DIR = os.path.join(OUTPUT_DIR, "annotated_originals")
