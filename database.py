@@ -2,6 +2,7 @@ import sqlite3
 import os
 import cv2
 import json
+import numpy as np
 
 
 class FaceDatabase:
@@ -34,31 +35,53 @@ class FaceDatabase:
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_image ON faces(image_path)')
         self.conn.commit()
 
-    def save_face(self, face_img, face_id, original_path, bbox):
+    def save_face(self, face_img, face_id, original_path, bbox, embedding=None):
         """Zapisuje wycinek twarzy do pliku i metadane do SQL."""
-
-        # 1. Wymuszamy ścieżkę absolutną i normalizujemy ukośniki
         faces_dir = os.path.abspath(self.config.FACES_DIR)
         os.makedirs(faces_dir, exist_ok=True)
+        face_path = os.path.join(faces_dir, f"{face_id}.jpg")
 
-        # 2. Tworzymy bezpieczną ścieżkę pliku
-        face_filename = f"{face_id}.jpg"
-        face_path = os.path.join(faces_dir, face_filename)
-        # 3. Zapis fizyczny
-        success = cv2.imwrite(face_path, face_img)
-        if not success:
-            # Jeśli nadal nie działa, sprawdź czy face_img nie jest None
-            print(f"[KRYTYCZNY BŁĄD] cv2.imwrite zwrócił False dla: {face_path}")
+        if not cv2.imwrite(face_path, face_img):
+            print(f"[KRYTYCZNY BŁĄD] cv2.imwrite nie powiódł się: {face_path}")
+            return
+
+        # Przygotowanie embeddingu do zapisu (konwersja na czysty JSON)
+        emb_json = None
+        if embedding is not None:
+            # Konwersja numpy -> list of floats
+            emb_json = json.dumps(embedding.astype(float).tolist())
+
+        try:
+            self.cursor.execute('''
+                INSERT OR REPLACE INTO faces (face_id, image_path, bbox, label, embedding)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (face_id, original_path, json.dumps(bbox), None, emb_json))
+            self.conn.commit()
+        except Exception as e:
+            print(f"[BŁĄD SQL] save_face: {e}")
 
     def update_embedding(self, face_id, embedding):
-        """Aktualizuje embedding dla konkretnej twarzy."""
-        # Konwersja na listę, jeśli to obiekt numpy (dla json.dumps)
-        embedding_data = embedding.tolist() if hasattr(embedding, 'tolist') else embedding
+        """Aktualizuje embedding, obsługując zarówno tablice NumPy, jak i listy."""
+        try:
+            # 1. Sprawdzamy, czy to tablica NumPy (ma atrybut 'astype')
+            if hasattr(embedding, "astype"):
+                clean_embedding = embedding.astype(float).tolist()
+            # 2. Jeśli to już jest lista, upewniamy się tylko, że elementy to floaty
+            elif isinstance(embedding, list):
+                clean_embedding = [float(x) for x in embedding]
+            # 3. W każdym innym przypadku (np. gdyby to był pojedynczy float lub None)
+            else:
+                clean_embedding = embedding
 
-        # Zmieniamy 'embedding_json' na 'embedding'
-        self.cursor.execute('UPDATE faces SET embedding = ? WHERE face_id = ?',
-                            (json.dumps(embedding_data), face_id))
-        self.conn.commit()
+            self.cursor.execute('''
+                UPDATE faces 
+                SET embedding = ? 
+                WHERE face_id = ?
+            ''', (json.dumps(clean_embedding), face_id))
+            self.conn.commit()
+
+        except Exception as e:
+            print(f"[BŁĄD SQL] update_embedding dla {face_id}: {e}")
 
     def get_unlabeled_map(self):
         """Returns the unlabeled faces grouped by image path."""
@@ -103,10 +126,20 @@ class FaceDatabase:
         return {row[0] for row in self.cursor.fetchall()}
 
     def get_all_unlabeled_embeddings(self):
-        """Pobiera ID i embeddingi dla twarzy, które nie mają jeszcze etykiety."""
-        # Zmieniamy 'embedding_json' na 'embedding'
-        self.cursor.execute('SELECT face_id, embedding FROM faces WHERE label IS NULL')
-        return self.cursor.fetchall()
+        """Pobiera niepodpisane dane i od razu konwertuje je na tablice NumPy."""
+        self.cursor.execute('SELECT face_id, embedding FROM faces WHERE label IS NULL AND embedding IS NOT NULL')
+        rows = self.cursor.fetchall()
+
+        processed_data = []
+        for face_id, emb_json in rows:
+            try:
+                # Konwersja powrotna: JSON string -> NumPy array
+                embedding_array = np.array(json.loads(emb_json), dtype=float)
+                processed_data.append((face_id, embedding_array))
+            except:
+                continue
+
+        return processed_data
 
     def get_all_labeled_faces(self):
         """Pobiera listę (face_id, label) dla wszystkich podpisanych twarzy."""

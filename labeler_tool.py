@@ -9,8 +9,19 @@ def run_manual_labeler():
     config = Config()
     db = FaceDatabase(config)
 
-    # Pobieramy tylko te twarze, które nie mają jeszcze przypisanej etykiety
+    # test
+    # Wewnątrz run_manual_labeler
+    db.cursor.execute("SELECT COUNT(*) FROM faces")
+    total = db.cursor.fetchone()[0]
+    print(f"DEBUG: Całkowita liczba rekordów w bazie: {total}")
+
     db.cursor.execute("SELECT face_id FROM faces WHERE label IS NULL OR label = ''")
+    unlabeled = db.cursor.fetchall()
+    print(f"DEBUG: Liczba niepodpisanych: {len(unlabeled)}")
+
+
+    # Pobieramy tylko te twarze, które nie mają jeszcze przypisanej etykiety
+    db.cursor.execute("SELECT face_id FROM faces WHERE label IS NULL OR label = '' ")
     unlabeled = db.cursor.fetchall()
 
     if not unlabeled:
@@ -57,7 +68,7 @@ def run_manual_labeler():
             continue
         else:
             # Zapisujemy etykietę do bazy
-            db.cursor.execute("UPDATE faces SET label = ? WHERE id = ?", (label, face_id))
+            db.cursor.execute("UPDATE faces SET label = ? WHERE face_id = ?", (label, face_id))
             db.conn.commit()
             print(f" -> Zapisano: {label}")
 
