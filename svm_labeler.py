@@ -3,7 +3,7 @@ import sys
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# 2. Wymuszamy załadowanie silnika YOLO (torch) ZANIM PyQt5 przejmie kontrolę
+# Wymuszamy załadowanie silnika YOLO (torch) ZANIM PyQt5 przejmie kontrolę
 try:
     from ultralytics import YOLO
     import torch
@@ -26,31 +26,25 @@ from sklearn.preprocessing import StandardScaler
 class SmartLabeler:
     def __init__(self):
         self.config = Config()
+
+        os.makedirs(self.config.FACES_DIR, exist_ok=True)
+        print(f"Directory with faces ready : {os.path.abspath(self.config.FACES_DIR)}")
+
         self.db = FaceDatabase(self.config)
+
         self.engine = FaceEngine(self.config)
         self.ui = FaceInterface()
         self.trained_models = {}
 
     def manual_fix_callback(self, face_id, new_name):
-        """
-        Wywoływane z GUI (FaceCard), gdy użytkownik zmieni imię
-        w głównym oknie weryfikacji.
-        """
-        print(f"Ręczna korekta: {face_id} -> {new_name}")
-        # Ustawiamy validated=True, bo użytkownik osobiście to potwierdził
-        self.db.set_label(face_id, new_name, validated=True)
+        """zapisuje etykietę wybraną przez użytkownika."""
+        print(f"Ręczna etykieta: {face_id} -> {new_name}")
 
-        # Pobieramy wszystkie twarze dla nowej osoby i douczamy model (zespalanie z GUI)
-        labeled_faces = self.db.get_all_labeled_faces()
-        embeddings_for_svm = []
-        for fid, label in labeled_faces:
-            if label == new_name:
-                meta = self.db.get_metadata_for_gui(fid)
-                if meta and 'embedding' in meta:
-                    embeddings_for_svm.append(meta['embedding'])
+        # standardowy set_label
+        self.db.set_label(face_id, new_name)
 
-        if len(embeddings_for_svm) > 0:
-            self._train_identity_model(new_name, embeddings_for_svm)
+        # Odświeżamy widok
+        self.refresh_main_view()
 
     def refresh_main_view(self):
         """Pobiera dane z bazy i odświeża siatkę w głównym oknie."""
@@ -58,83 +52,81 @@ class SmartLabeler:
         # Przekazujemy listę krotek i metodę callback do obsługi zmian
         self.ui.refresh_classified_faces(labeled_faces, self.manual_fix_callback)
 
-    def run_initial_scan(self, limit=600):
-        print("\n--- Przygotowanie do nowego skanu (czyszczenie bazy) ---")
-        self.db.clear_database()
+    def run_initial_scan(self, mode="incremental", limit=1000):
+        """
+        Tylko wycinanie twarzy + stabilny zapis.
+        Zachowano strukturę pozwalającą na wizualizację klasyfikacji w przyszłości.
+        """
+        # 1. Przygotowanie folderów
+        os.makedirs(self.config.FACES_DIR, exist_ok=True)
+        # Folder na wyniki wizualizacji (np. zdjęcia z ramkami)
+        output_viz_dir = os.path.join(self.config.OUTPUT_DIR, "visualizations")
+        os.makedirs(output_viz_dir, exist_ok=True)
 
-        # Opcjonalnie: usuwanie starych wyciętych twarzy z folderu
-        if os.path.exists(self.config.FACES_DIR):
-            for file in os.listdir(self.config.FACES_DIR):
-                file_path = os.path.join(self.config.FACES_DIR, file)
-                try:
-                    if os.path.isfile(file_path): os.unlink(file_path)
-                except Exception as e:
-                    print(f"Nie udało się usunąć {file}: {e}")
-        else:
-            os.makedirs(self.config.FACES_DIR, exist_ok=True)
+        if mode == "full":
+            print("Tryb FULL: Czyszczenie bazy i folderu twarzy...")
+            self.db.clear_database()
+            for f in os.listdir(self.config.FACES_DIR):
+                os.remove(os.path.join(self.config.FACES_DIR, f))
 
-        # 1. Zbieranie ścieżek
-        image_paths = []
+        # 2. Zbieranie plików
+        all_paths = []
         for root, _, files in os.walk(self.config.SOURCE_DIR):
             for file in files:
                 if file.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    image_paths.append(os.path.join(root, file))
-                if len(image_paths) >= limit: break
-            if len(image_paths) >= limit: break
+                    all_paths.append(os.path.abspath(os.path.join(root, file)))
 
-        processed_paths = self.db.get_all_processed_paths()
+        # 3. Filtrowanie już przetworzonych
+        processed = set(self.db.get_all_processed_paths())
+        to_process = [p for p in all_paths if p not in processed][:limit]
 
-        # 2. Inicjalizacja paska w GUI
-        total_to_scan = len(image_paths)
-        self.ui.show_startup_progress(total_to_scan)
+        if not to_process:
+            print("Brak nowych zdjęć do przetworzenia.")
+            return
 
-        # 3. Pętla skanowania
-        for i, full_path in enumerate(tqdm(image_paths, desc="Feature extraction", unit="img")):
+        # 4. Główna pętla YOLO
+        pbar = tqdm(to_process, desc="Ekstrakcja twarzy")
+        for full_path in pbar:
+            try:
+                detected_faces = self.engine.extract_face_data(full_path)
+                file_name = os.path.basename(full_path)
 
-            # Aktualizacja GUI
-            self.ui.update_startup_progress(i, f"Przetwarzanie: {os.path.basename(full_path)}")
+                for i, face in enumerate(detected_faces):
+                    # Czyścimy nazwę pliku: usuwamy spacje i kropki
+                    safe_name = os.path.basename(full_path).replace(" ", "_").replace(".", "_")
+                    face_id = f"{safe_name}_f{i}"
 
-            if full_path in processed_paths:
-                continue
+                    self.db.save_face(face['crop'], face_id, full_path, face['bbox'])
+                    self.db.update_embedding(face_id, face['embedding'])
 
-            detected_faces = self.engine.extract_face_data(full_path)
-            file_name = os.path.basename(full_path)
+                self.db.mark_as_processed(full_path)
 
-            for j, face_data in enumerate(detected_faces):
-                face_id = f"{os.path.splitext(file_name)[0]}_f{j}"
-                self.db.save_face(face_data['crop'], face_id, full_path, face_data['bbox'])
-                self.db.update_embedding(face_id, face_data['embedding'])
-                # self.db.mark_as_processed(full_path)  # Oznaczamy jako przetworzone
+            except Exception as e:
+                pbar.write(f"Błąd pliku {file_name}: {e}")
 
-        # 4. Zamknięcie paska przed startem właściwego etykietowania
-        self.ui.close_startup_progress()
-        print(f"\nScan complete.")
+        print(f"Zakończono. Przetworzono {len(to_process)} zdjęć.")
 
     def process_bulk_selection(self, face_ids):
-        """Obsługuje okno dialogowe DBSCAN i trenuje model SVM."""
+        """
+        Przywrócona wersja tradycyjna:
+        Zapisuje etykiety wybrane przez użytkownika i odświeża widok.
+        """
+        # Wyświetlamy okno z twarzami z DBSCAN
         selected_fids, name = self.ui.bulk_verify_faces(face_ids)
+
+        # Jeśli użytkownik zamknął okno lub nie podał imienia - przerywamy
         if not selected_fids or not name:
             return
 
-        # 1. Zapisujemy nowe etykiety w bazie (tylko te wybrane ptaszkiem)
+        # 1. Zapisujemy wybrane twarze w bazie danych
         for fid in selected_fids:
-            self.db.set_label(fid, name, validated=True)
+            # Usuwamy 'validated=True', jeśli cofnąłeś zmiany w schemacie bazy
+            # Jeśli zostawiłeś kolumnę 'validated', możesz ją zostawić.
+            self.db.set_label(fid, name)
 
-        # 2. POBIERAMY WSZYSTKIE TWARZE TEJ OSOBY Z BAZY (Zespalanie starych z nowymi)
-        labeled_faces = self.db.get_all_labeled_faces()
-        embeddings_for_svm = []
+        print(f"Ręcznie zaetykietowano {len(selected_fids)} twarzy jako: {name}")
 
-        for fid, label in labeled_faces:
-            if label == name:
-                meta = self.db.get_metadata_for_gui(fid)
-                if meta and 'embedding' in meta:
-                    embeddings_for_svm.append(meta['embedding'])
-
-        # 3. Trenujemy (lub nadpisujemy) model SVM na połączonym, powiększonym zbiorze
-        if len(embeddings_for_svm) > 0:
-            self._train_identity_model(name, embeddings_for_svm)
-
-        # Odświeżamy widok, żeby pokazać nowo dodane twarze
+        # 2. Odświeżamy tylko widok w GUI (bez trenowania SVM w locie)
         self.refresh_main_view()
 
     def _train_identity_model(self, name, group_embeddings):
@@ -146,23 +138,23 @@ class SmartLabeler:
             print(f"Za mało próbek do wytrenowania profilu SVM dla: {name} (minimum 2)")
             return
 
-        # 1. Normalizacja (StandardScaler)
-        scaler = StandardScaler()
-        train_embs_scaled = scaler.fit_transform(train_embs)
+        # # 1. Normalizacja (StandardScaler)
+        # scaler = StandardScaler()
+        # train_embs_scaled = scaler.fit_transform(train_embs)
 
         # 2. Trening OCSVM
-        clf = OneClassSVM(kernel='rbf', gamma='auto', nu=0.4)
-        clf.fit(train_embs_scaled)
+        clf = OneClassSVM(kernel='rbf', gamma="scale", nu=0.05) # gamma = "auto"
+        clf.fit(train_embs)
 
         # 3. Zapisanie modelu i scalera do słownika
         self.trained_models[name] = {
-            'model': clf,
-            'scaler': scaler
+            'clf': clf,
+            'scaler': None  # Oznaczamy, że nie używamy scalera
         }
         print(f"Wytrenowano profil SVM dla: {name} (na {len(train_embs)} próbkach)")
 
     def run_clustering_phase(self):
-        """Uruchamia DBSCAN na wektorach i pokazuje użytkownikowi propozycje grup."""
+        """Uruchamia DBSCAN i pokazuje użytkownikowi tylko próbki (max 10) do nauki SVM."""
         print("\n--- Rozpoczynam fazę grupowania (DBSCAN) ---")
         unlabeled_data = self.db.get_all_unlabeled_embeddings()
         if not unlabeled_data: return
@@ -170,32 +162,38 @@ class SmartLabeler:
         fids = [item[0] for item in unlabeled_data]
         embeddings = np.array([item[1] for item in unlabeled_data])
 
-        # 1. Normalizacja całej chmury punktów
+        # Normalizacja i PCA (bez zmian)
         scaler = StandardScaler()
         embeddings_norm = scaler.fit_transform(embeddings)
-
-        # 2. PCA na znormalizowanych danych
         pca = PCA(n_components=min(50, len(embeddings)))
         reduced_embeddings = pca.fit_transform(embeddings_norm)
 
-        # 3. Wywołanie silnika z parametrami
+        # Pobieramy grupy z silnika
         clusters = self.engine.get_face_clusters(reduced_embeddings, fids)
 
-        # Filtrujemy grupy: bierzemy tylko te, które mają np. minimum 4 zdjęcia
-        valid_clusters = {cid: cfids for cid, cfids in clusters.items() if len(cfids) >= 4}
+        # 1. LIMIT MINIMALNY: Odrzucamy grupy mniejsze niż 5 zdjęć (szum)
+        valid_clusters = {cid: cfids for cid, cfids in clusters.items() if len(cfids) >= 3}
 
-        print(f"Znaleziono {len(clusters)} grup ogółem, do weryfikacji zakwalifikowano {len(valid_clusters)}.")
+        print(
+            f"DBSCAN znalazł {len(clusters)} grup. Do weryfikacji (treningu) wybrano {len(valid_clusters)} najsilniejszych.")
 
         for cluster_id, cluster_fids in valid_clusters.items():
-            # Wywołujemy okno tylko dla grup, które mają sens
-            self.process_bulk_selection(cluster_fids)
-            self.refresh_main_view()
+            # 2. LIMIT MAKSYMALNY: Bierzemy tylko pierwsze 10 zdjęć!
+            # Jeśli DBSCAN znalazł 40 twarzy Kamila, Ty ocenisz tylko 10 z nich.
+            # Pozostałe 30 zostaje na razie bez etykiety.
+            sample_fids = cluster_fids[:13]
 
-        # Reszta (małe grupki i szum) zostanie dla SVM
+            # Pokazujemy okno tylko dla tych 10 zdjęć
+            self.process_bulk_selection(sample_fids)
+
+        # 3. Faza SVM:
+        # Teraz SVM uczy się na Twoich zatwierdzonych próbkach (max 10 na osobę).
+        # Następnie skanuje WSZYSTKIE niepodpisane zdjęcia, wliczając w to
+        # te odrzucone "nadwyżki" z DBSCAN i klasyfikuje je samodzielnie!
         self.run_competition_phase()
 
-        # Ostatnie odświeżenie głównego widoku
         self.refresh_main_view()
+
 
     def run_competition_phase(self):
         """Wszystkie wytrenowane modele rywalizują o niepodpisane twarze."""
@@ -209,37 +207,33 @@ class SmartLabeler:
         fids = [item[0] for item in unlabeled_data]
         test_embs = np.array([item[1] for item in unlabeled_data])
 
-        best_matches = {fid: {'best_score': 0.0, 'best_name': None} for fid in fids}
+        # WAŻNE: Startujemy od -1.0, bo Twoje wyniki są ujemne!
+        # Jeśli zostawisz 0.0, żaden wynik -0.5 nigdy nie zostanie wybrany.
+        best_matches = {fid: {'best_score': -1.0, 'best_name': None} for fid in fids}
 
-        for name, pipeline in self.trained_models.items():
-            scaler = pipeline['scaler']
-            clf = pipeline['model']
+        for name, model_bundle in self.trained_models.items():
+            clf = model_bundle['clf']  # Poprawiono klucz z 'model' na 'clf'
 
-            # Zabezpieczenie na wypadek błędnych wymiarów
-            if test_embs.shape[1] != scaler.mean_.shape[0]:
-                continue
+            # Używamy surowych test_embs (bez skalowania)
+            scores = clf.decision_function(test_embs)
 
-            test_embs_scaled = scaler.transform(test_embs)
-            scores = clf.decision_function(test_embs_scaled)
-
-            # DEBUG: Sprawdźmy najwyższy wynik dla tego modelu
             if len(scores) > 0:
-                print(f"Model {name}: max score = {np.max(scores):.4f}, min score = {np.min(scores):.4f}")
+                print(f"Model {name}: max score = {np.max(scores):.4f}")
 
-            for fid, score in zip(fids, scores):
-                # score > 0 oznacza, że model uznaje twarz za należącą do swojej klasy
-                if score > 0 and score > best_matches[fid]['best_score']:
+            for i, score in enumerate(scores):
+                fid = fids[i]
+                # Próg -0.65 jest OK, ale musi być wyższy niż startowe -1.0
+                if score > -0.65 and score > best_matches[fid]['best_score']:
                     best_matches[fid]['best_score'] = score
                     best_matches[fid]['best_name'] = name
 
         matches_count = 0
         for fid, match in best_matches.items():
             if match['best_name'] is not None:
-                # validated=False oznacza, że zrobił to automat
                 self.db.set_label(fid, match['best_name'], validated=False)
                 matches_count += 1
 
-        print(f"Zakończono rywalizację. Automatycznie sklasyfikowano {matches_count} twarzy.")
+        print(f"Zakończono rywalizację. Automatycznie sklasyfikowano {matches_count} twarzy")
 
     def start_labeling(self):
         """Finalizuje proces i utrzymuje okno otwarte dla użytkownika."""
@@ -247,9 +241,49 @@ class SmartLabeler:
         self.refresh_main_view()
         sys.exit(self.ui.app.exec_())
 
+    def visualize_results(self):
+        """
+        Rysuje ramki i podpisy na kopiach oryginalnych zdjęć
+        na podstawie aktualnych etykiet w bazie.
+        """
+        import cv2
+        output_dir = os.path.join(self.config.OUTPUT_DIR, "visualizations")
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Pobierz wszystkie twarze, które mają już jakąś etykietę
+        labeled_faces = self.db.get_all_labeled_faces()  # Zwraca (face_id, label)
+
+        # Grupowanie według ścieżki do oryginalnego zdjęcia
+        image_map = {}
+        for fid, label in labeled_faces:
+            meta = self.db.get_metadata_for_gui(fid)  # Zakładam, że zwraca image_path i bbox
+            path = meta['image_path']
+            if path not in image_map: image_map[path] = []
+            image_map[path].append({'label': label, 'bbox': meta['bbox']})
+
+        print(f"Generowanie wizualizacji dla {len(image_map)} zdjęć...")
+        for img_path, detections in image_map.items():
+            img = cv2.imread(img_path)
+            for det in detections:
+                x1, y1, x2, y2 = map(int, det['bbox'])
+                # Rysowanie ramki
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                # Rysowanie etykiety
+                cv2.putText(img, str(det['label']), (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+            save_path = os.path.join(output_dir, os.path.basename(img_path))
+            cv2.imwrite(save_path, img)
+
 
 if __name__ == "__main__":
-    app = SmartLabeler()
-    app.run_initial_scan(limit=300)
-    app.run_clustering_phase()
-    app.start_labeling()
+    app_instance = SmartLabeler()
+
+    # 1. FRONTEND: Zapytaj użytkownika o tryb
+    mode = app_instance.ui.ask_for_scan_mode()
+
+    # 2. BACKEND: Uruchom skanowanie z wybranym trybem
+    if mode != "cancel":
+        app_instance.run_initial_scan(mode=mode, limit=500)
+        app_instance.run_clustering_phase()
+        app_instance.start_labeling()

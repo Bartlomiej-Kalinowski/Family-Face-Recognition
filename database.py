@@ -20,36 +20,44 @@ class FaceDatabase:
         os.makedirs(self.config.FACES_DIR, exist_ok=True)
 
     def _create_tables(self):
-        """Creates the database schema."""
+        """Tworzy schemat bazy od zera."""
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS faces (
                 face_id TEXT PRIMARY KEY,
-                original_image TEXT,
-                bbox_json TEXT,
+                image_path TEXT,
+                bbox TEXT,
                 label TEXT,
-                embedding_json TEXT,
-                is_validated INTEGER DEFAULT 0
+                embedding BLOB
             )
         ''')
-        # Indeks dla szybkości wyszukiwania po obrazku
-        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_image ON faces(original_image)')
+        # Ważne: indeks też musi celować w istniejącą kolumnę!
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_image ON faces(image_path)')
         self.conn.commit()
 
     def save_face(self, face_img, face_id, original_path, bbox):
-        """Saves face crop and metadata directly to SQL."""
-        face_path = os.path.join(self.config.FACES_DIR, f"{face_id}.jpg")
-        cv2.imwrite(face_path, face_img)
+        """Zapisuje wycinek twarzy do pliku i metadane do SQL."""
 
-        self.cursor.execute('''
-            INSERT OR REPLACE INTO faces (face_id, original_image, bbox_json, label)
-            VALUES (?, ?, ?, ?)
-        ''', (face_id, original_path, json.dumps(bbox), None))
-        self.conn.commit()
+        # 1. Wymuszamy ścieżkę absolutną i normalizujemy ukośniki
+        faces_dir = os.path.abspath(self.config.FACES_DIR)
+        os.makedirs(faces_dir, exist_ok=True)
+
+        # 2. Tworzymy bezpieczną ścieżkę pliku
+        face_filename = f"{face_id}.jpg"
+        face_path = os.path.join(faces_dir, face_filename)
+        # 3. Zapis fizyczny
+        success = cv2.imwrite(face_path, face_img)
+        if not success:
+            # Jeśli nadal nie działa, sprawdź czy face_img nie jest None
+            print(f"[KRYTYCZNY BŁĄD] cv2.imwrite zwrócił False dla: {face_path}")
 
     def update_embedding(self, face_id, embedding):
-        """Updates only the embedding for a specific face."""
-        self.cursor.execute('UPDATE faces SET embedding_json = ? WHERE face_id = ?',
-                            (json.dumps(embedding.tolist() if hasattr(embedding, 'tolist') else embedding), face_id))
+        """Aktualizuje embedding dla konkretnej twarzy."""
+        # Konwersja na listę, jeśli to obiekt numpy (dla json.dumps)
+        embedding_data = embedding.tolist() if hasattr(embedding, 'tolist') else embedding
+
+        # Zmieniamy 'embedding_json' na 'embedding'
+        self.cursor.execute('UPDATE faces SET embedding = ? WHERE face_id = ?',
+                            (json.dumps(embedding_data), face_id))
         self.conn.commit()
 
     def get_unlabeled_map(self):
@@ -95,10 +103,10 @@ class FaceDatabase:
         return {row[0] for row in self.cursor.fetchall()}
 
     def get_all_unlabeled_embeddings(self):
-        """Returns list of (face_id, embedding) for unlabeled faces."""
-        self.cursor.execute('SELECT face_id, embedding_json FROM faces WHERE label IS NULL')
-        rows = self.cursor.fetchall()
-        return [(row[0], json.loads(row[1])) for row in rows if row[1]]
+        """Pobiera ID i embeddingi dla twarzy, które nie mają jeszcze etykiety."""
+        # Zmieniamy 'embedding_json' na 'embedding'
+        self.cursor.execute('SELECT face_id, embedding FROM faces WHERE label IS NULL')
+        return self.cursor.fetchall()
 
     def get_all_labeled_faces(self):
         """Pobiera listę (face_id, label) dla wszystkich podpisanych twarzy."""
@@ -115,7 +123,26 @@ class FaceDatabase:
         except Exception as e:
             print(f"Błąd podczas czyszczenia bazy: {e}")
 
-    # def mark_as_processed(self, image_path):
-    #     """Zapisuje ścieżkę do bazy, aby nie skanować zdjęcia ponownie."""
-    #     self.cursor.execute("INSERT OR IGNORE INTO processed_images (path) VALUES (?)", (image_path,))
-    #     self.conn.commit()
+    def mark_as_processed(self, image_path):
+        """Oznacza zdjęcie jako przetworzone w osobnej tabeli."""
+        try:
+            # Tworzymy tabelę, jeśli jeszcze nie istnieje
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS processed_images (
+                    path TEXT PRIMARY KEY
+                )
+            ''')
+            # Wstawiamy ścieżkę (OR IGNORE zapobiega błędom przy duplikatach)
+            self.cursor.execute("INSERT OR IGNORE INTO processed_images (path) VALUES (?)", (image_path,))
+            self.conn.commit()
+        except Exception as e:
+            print(f"Błąd bazy danych (mark_as_processed): {e}")
+
+    def get_all_processed_paths(self):
+        """Zwraca listę wszystkich przetworzonych ścieżek."""
+        try:
+            self.cursor.execute("SELECT path FROM processed_images")
+            return [row[0] for row in self.cursor.fetchall()]
+        except:
+            # Jeśli tabela jeszcze nie istnieje, zwracamy pustą listę
+            return []

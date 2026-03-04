@@ -77,7 +77,7 @@ class FaceEngine:
     def get_face_clusters(self, embeddings, fids):
         # eps: odległość (kluczowy parametr, zacznij od 0.5)
         # min_samples: ile zdjęć musi być blisko siebie, by uznać to za grupę
-        dbscan = DBSCAN(eps=0.42, min_samples=4, metric='cosine')
+        dbscan = DBSCAN(eps=0.40, min_samples=3, metric='cosine')
         labels = dbscan.fit_predict(embeddings)
 
         clusters = {}

@@ -3,7 +3,7 @@ import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QPushButton, QFileDialog,
                              QScrollArea, QLineEdit, QFrame, QDialog, QGridLayout,
-                             QProgressDialog, QCheckBox)
+                             QProgressDialog, QCheckBox, QMessageBox)
 from PyQt5.QtGui import QPixmap, QImage, QPalette, QColor, QFont
 from PyQt5.QtCore import Qt, QEventLoop, pyqtSignal
 from config import Config
@@ -115,6 +115,28 @@ class FaceInterface(QMainWindow):
         controls.addStretch()
         controls.addWidget(self.lbl_stats)
         layout.addLayout(controls)
+
+    def ask_for_scan_mode(self):
+        """
+        Pyta użytkownika o tryb działania YOLO.
+        Zwraca True jeśli 'Nowy pakiet' (Full Scan), False jeśli 'Wczytaj' (Incremental).
+        """
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Question)
+        msg.setWindowTitle("Wybierz tryb skanowania")
+        msg.setText("Wykryto folder ze zdjęciami. Jak chcesz kontynuować?")
+
+        btn_full = msg.addButton("Nowy pakiet (Wyczyść i YOLO od nowa)", QMessageBox.ActionRole)
+        btn_inc = msg.addButton("Wczytaj (Tylko nowe/istniejące)", QMessageBox.ActionRole)
+        msg.addButton("Anuluj", QMessageBox.RejectRole)
+
+        msg.exec_()
+
+        if msg.clickedButton() == btn_full:
+            return "full"
+        elif msg.clickedButton() == btn_inc:
+            return "incremental"
+        return "cancel"
 
     def refresh_classified_faces(self, face_data_list, callback):
         """
