@@ -3,7 +3,7 @@ import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QPushButton, QFileDialog,
                              QScrollArea, QLineEdit, QFrame, QDialog, QGridLayout,
-                             QProgressDialog, QCheckBox, QMessageBox)
+                             QProgressDialog, QCheckBox, QMessageBox, QProgressBar)
 from PyQt5.QtGui import QPixmap, QImage, QPalette, QColor, QFont
 from PyQt5.QtCore import Qt, QEventLoop, pyqtSignal
 from config import Config
@@ -104,6 +104,36 @@ class FaceInterface(QMainWindow):
 
         self.scroll.setWidget(self.grid_container)
         layout.addWidget(self.scroll)
+
+        # --- SEKCJA: PASEK POSTĘPU ---
+        self.progress_container = QFrame()
+        self.progress_container.setStyleSheet("background-color: #2b2b2b; border-radius: 5px;")
+        progress_layout = QVBoxLayout(self.progress_container)
+
+        self.statusLabel = QLabel("Gotowy")
+        self.statusLabel.setStyleSheet("color: #aaa; font-size: 11px;")
+        progress_layout.addWidget(self.statusLabel)
+
+        self.progressBar = QProgressBar()
+        self.progressBar.setFixedHeight(15)
+        self.progressBar.setTextVisible(True)
+        self.progressBar.setAlignment(Qt.AlignCenter)
+        self.progressBar.setStyleSheet("""
+                    QProgressBar {
+                        border: 1px solid #444;
+                        border-radius: 7px;
+                        background-color: #1e1e1e;
+                        text-align: center;
+                        color: white;
+                    }
+                    QProgressBar::chunk {
+                        background-color: #007acc;
+                        border-radius: 6px;
+                    }
+                """)
+        progress_layout.addWidget(self.progressBar)
+
+        layout.addWidget(self.progress_container)  # Dodajemy kontener do głównego układu
 
         # Dolny pasek kontrolny
         controls = QHBoxLayout()
@@ -252,3 +282,38 @@ class FaceInterface(QMainWindow):
     def close_startup_progress(self):
         if hasattr(self, 'progress_dialog'):
             self.progress_dialog.close()
+
+    # Wewnątrz klasy okna GUI
+    def start_scanning(self):
+        def update_bar(current, total, text):
+            self.progressBar.setMaximum(total)
+            self.progressBar.setValue(current)
+            self.statusLabel.setText(text)
+            # Wymuszenie odświeżenia GUI, jeśli nie używasz wątków
+            self.app.processEvents()
+
+        self.controller.run_initial_scan(progress_callback=update_bar)
+
+    def update_progress(self, current: int, total: int, message: str = ""):
+        """
+        Aktualizuje pasek postępu oraz (opcjonalnie) etykietę statusu.
+        current: aktualny numer elementu
+        total: całkowita liczba elementów
+        message: tekst wyświetlany na pasku lub statusie
+        """
+        if total > 0:
+            percentage = int((current / total) * 100)
+            self.progressBar.setValue(percentage)
+
+            # Opcjonalnie: ustawienie tekstu na pasku (jeśli progressBar.setTextVisible(True))
+            if message:
+                self.progressBar.setFormat(f"{message} ({percentage}%)")
+            else:
+                self.progressBar.setFormat(f"%p%")
+
+        # Bardzo ważne: Wymuszenie przerysowania widżetu
+        self.progressBar.repaint()
+
+    def update_face_stats(self, count: int):
+        """Aktualizuje tekst statystyk na dolnym pasku."""
+        self.lbl_stats.setText(f"Wykryto łącznie twarzy: {count}")

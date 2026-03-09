@@ -1,11 +1,18 @@
 import os
+from pathlib import Path
+
 
 class Config:
-    """Project configuration constants."""
+    """
+    Przechowuje globalne ustawienia projektu i stałe konfiguracyjne.
+    Zasada SRP: Ta klasa odpowiada TYLKO za trzymanie wartości konfiguracyjnych.
+    """
     YOLO_MODEL_PATH = './face_detection_model/yolov8n-face.pt'
-    # SOURCE_DIR = "./WIDER_train" # "./datasetFIW/train"
-    SOURCE_DIR = "C:/Users/Kalin/PycharmProjects/LIC/da_images"
-    OUTPUT_DIR = "./output_data"
+
+    # Używamy ścieżek względnych lub domyślnego folderu, aby uniknąć błędów na innych komputerach
+    BASE_DIR = Path(__file__).resolve().parent
+    SOURCE_DIR = str(BASE_DIR / "da_images")  # Domyślny folder ze zdjęciami
+    OUTPUT_DIR = str(BASE_DIR / "output_data")
 
     ANNOTATED_DIR = os.path.join(OUTPUT_DIR, "annotated_originals")
     FACES_DIR = os.path.join(OUTPUT_DIR, "extracted_faces")
@@ -16,7 +23,7 @@ class Config:
     MATCH_PROBABILITY_THRESHOLD = 0.5
 
     @classmethod
-    def update_source_dir(cls, new_path):
-        """Dynamically updates the source directory."""
+    def update_source_dir(cls, new_path: str) -> None:
+        """Dynamicznie aktualizuje ścieżkę do folderu źródłowego."""
         if os.path.exists(new_path):
             cls.SOURCE_DIR = new_path
