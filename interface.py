@@ -146,39 +146,34 @@ class FaceInterface(QMainWindow):
         controls.addWidget(self.lbl_stats)
         layout.addLayout(controls)
 
+    # W interface.py
     def ask_for_scan_mode(self):
-        """
-        Pyta użytkownika o tryb działania YOLO.
-        Zwraca True jeśli 'Nowy pakiet' (Full Scan), False jeśli 'Wczytaj' (Incremental).
-        """
         msg = QMessageBox()
-        msg.setIcon(QMessageBox.Question)
-        msg.setWindowTitle("Wybierz tryb skanowania")
-        msg.setText("Wykryto folder ze zdjęciami. Jak chcesz kontynuować?")
-
-        btn_full = msg.addButton("Nowy pakiet (Wyczyść i YOLO od nowa)", QMessageBox.ActionRole)
-        btn_inc = msg.addButton("Wczytaj (Tylko nowe/istniejące)", QMessageBox.ActionRole)
-        msg.addButton("Anuluj", QMessageBox.RejectRole)
+        msg.setWindowTitle("Tryb Skanowania")
+        msg.setText("Wybierz sposób przygotowania bazy:")
+        full_btn = msg.addButton("Pełny Skan (YOLO)", QMessageBox.ActionRole)
+        incr_btn = msg.addButton("Przyrostowy", QMessageBox.ActionRole)
+        exist_btn = msg.addButton("Mam już wycięte twarze", QMessageBox.ActionRole)
+        cancel_btn = msg.addButton("Anuluj", QMessageBox.RejectRole)
 
         msg.exec_()
 
-        if msg.clickedButton() == btn_full:
-            return "full"
-        elif msg.clickedButton() == btn_inc:
-            return "incremental"
+        if msg.clickedButton() == full_btn: return "full"
+        if msg.clickedButton() == incr_btn: return "incremental"
+        if msg.clickedButton() == exist_btn: return "use_existing"
         return "cancel"
 
     def refresh_classified_faces(self, face_data_list, callback):
         """
         Czyści siatkę i ładuje nowe twarze sklasyfikowane przez SVM.
-        face_data_list: lista krotek (face_id, name)
+        face_data_list: lista krotek (fid, name, is_manual)
         callback: funkcja w main.py obsługująca zmianę imienia
         """
         # Czyszczenie siatki
         for i in reversed(range(self.grid_layout.count())):
             self.grid_layout.itemAt(i).widget().setParent(None)
 
-        for i, (fid, name) in enumerate(face_data_list):
+        for i, (fid, name, *_) in enumerate(face_data_list):
             card = FaceCard(fid, name)
             card.confirmed.connect(callback)
             self.grid_layout.addWidget(card, i // 6, i % 6)
@@ -317,3 +312,16 @@ class FaceInterface(QMainWindow):
     def update_face_stats(self, count: int):
         """Aktualizuje tekst statystyk na dolnym pasku."""
         self.lbl_stats.setText(f"Wykryto łącznie twarzy: {count}")
+
+    @staticmethod
+    def confirm_all_labels():
+        reply = QMessageBox.question(
+            None,  # Lub self.ui jeśli main.py dziedziczy/ma dostęp do QMainWindow
+            'Generowanie wizualizacji',
+            'Klasyfikacja zakończona pomyślnie. Czy chcesz wygenerować folder z podpisanymi zdjęciami (dla wszystkich twarzy w bazie)?',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            return 0
+        return 1

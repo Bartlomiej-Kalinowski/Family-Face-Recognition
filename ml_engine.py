@@ -5,6 +5,9 @@ from sklearn.svm import SVC
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import GridSearchCV
+from sklearn.decomposition import PCA
+from sklearn.pipeline import Pipeline
 
 
 class FaceExtractor:
@@ -49,7 +52,7 @@ class FaceExtractor:
             gray = clahe.apply(gray)
 
             # Ekstrakcja cech (HOG)
-            embedding = hog.compute(gray).flatten().astype(np.float32)
+            embedding = np.array(hog.compute(gray)).flatten().astype(np.float32)
             embedding = embedding / (np.linalg.norm(embedding) + 1e-6)
 
             faces_data.append({
@@ -61,6 +64,7 @@ class FaceExtractor:
         return faces_data
 
 
+
 class FaceClassifier:
     """
     Moduł Uczenia Maszynowego.
@@ -70,7 +74,6 @@ class FaceClassifier:
     def __init__(self):
         """Inicjalizuje globalny model klasyfikatora."""
         self.svm_model = None
-        self.scaler = StandardScaler()
         self.is_trained = False
 
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
@@ -80,30 +83,42 @@ class FaceClassifier:
 
         clusters = {}
         for fid, label in zip(fids, labels):
-            if label == -1: continue  # Odrzucamy szum
+            # if label == -1: continue  # Odrzucamy szum
             if label not in clusters: clusters[label] = []
             clusters[label].append(fid)
         return clusters
 
     def train_multiclass_svm(self, X_train: list, y_train_labels: list) -> None:
-        """
-        Trenuje globalny model One-vs-Rest SVM na wszystkich podpisanych twarzach.
-        To całkowicie zastępuje poprzednie słowniki OneClassSVM!
-        """
         if len(set(y_train_labels)) < 2:
-            print("Zbyt mało unikalnych osób (wymagane min. 2), by wytrenować klasyfikator.")
             return
 
-        # Standaryzacja wektorów
-        X_scaled = self.scaler.fit_transform(np.array(X_train))
+        # 1. Tworzymy Pipeline: Skalowanie -> PCA -> OneVsRest(SVC)
+        # Zauważ, że SVC jest teraz wewnątrz OneVsRestClassifier
+        pipe = Pipeline([
+            ('scaler', StandardScaler()),
+            ('pca', PCA(n_components=0.90)),
+            ('clf', OneVsRestClassifier(SVC(kernel='rbf', probability=True, class_weight='balanced')))
+        ])
 
-        # Wieloklasowy model SVM (C-Support Vector Classification) z jądrem RBF
-        base_svm = SVC(kernel='rbf', C=1.0, gamma='scale', probability=True)
-        self.svm_model = OneVsRestClassifier(base_svm)
+        # 2. Definiujemy siatkę parametrów
+        # UWAGA: Ponieważ SVC jest teraz "wnukiem" Pipeline'u (przez OneVsRest),
+        # dostęp do parametrów mamy przez: nazwaStepu__estimator__parametr
+        param_grid = {
+            'clf__estimator__C': [0.1, 1, 10, 100],
+            'clf__estimator__gamma': [0.001, 0.01, 0.1, 'scale']
+        }
 
-        self.svm_model.fit(X_scaled, y_train_labels)
+        # 3. Szukanie najlepszych ustawień
+        search = GridSearchCV(pipe, param_grid, cv=3, n_jobs=-1)
+        search.fit(np.array(X_train), y_train_labels)
+
+        # Zapisujemy cały Pipeline jako nasz model
+        self.svm_model = search.best_estimator_
         self.is_trained = True
-        print(f"Pomyślnie wytrenowano Multi-class SVM na {len(X_train)} próbkach ({len(set(y_train_labels))} klas).")
+
+        print(f"Najlepsze parametry (OvR): {search.best_params_}")
+        print(f"Najlepszy wynik (cross-val): {search.best_score_:.2%}")
+
 
     def predict_unlabeled(self, X_test: list) -> tuple:
         """
@@ -112,8 +127,7 @@ class FaceClassifier:
         if not self.is_trained:
             return [], []
 
-        X_test_scaled = self.scaler.transform(np.array(X_test))
-        predictions = self.svm_model.predict(X_test_scaled)
-        probabilities = np.max(self.svm_model.predict_proba(X_test_scaled), axis=1)
+        predictions = self.svm_model.predict(X_test)
+        probabilities = np.max(self.svm_model.predict_proba(X_test), axis=1)
 
         return predictions, probabilities
