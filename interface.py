@@ -1,21 +1,39 @@
-import sys
+﻿"""PyQt user interface components for face review and labeling workflows."""
+
 import os
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QLabel, QPushButton, QFileDialog,
-                             QScrollArea, QLineEdit, QFrame, QDialog, QGridLayout,
-                             QProgressDialog, QCheckBox, QMessageBox, QProgressBar)
-from PyQt5.QtGui import QPixmap, QImage, QPalette, QColor, QFont
-from PyQt5.QtCore import Qt, QEventLoop, pyqtSignal
+import sys
+
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QPalette, QPixmap
+from PyQt5.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QProgressDialog,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
 from config import Config
 
 
 class FaceCard(QFrame):
-    """
-    Karta twarzy w głównym oknie - pokazuje wynik SVM i pozwala na poprawkę.
-    """
+    """Single face tile with editable label and confirm action."""
+
     confirmed = pyqtSignal(str, str)
 
     def __init__(self, face_id, name, parent=None):
+        """Build a card for one detected face."""
         super().__init__(parent)
         self.face_id = face_id
         self.setFrameShape(QFrame.StyledPanel)
@@ -24,7 +42,6 @@ class FaceCard(QFrame):
 
         layout = QVBoxLayout()
 
-        # 1. Obrazek twarzy
         self.lbl_img = QLabel()
         self.lbl_img.setAlignment(Qt.AlignCenter)
         face_path = os.path.join(Config.FACES_DIR, f"{face_id}.jpg")
@@ -33,15 +50,14 @@ class FaceCard(QFrame):
             self.lbl_img.setPixmap(pixmap.scaled(130, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         layout.addWidget(self.lbl_img)
 
-        # 2. Pole imienia (wypełnione przez SVM)
         self.input_name = QLineEdit()
         self.input_name.setText(name)
         self.input_name.setStyleSheet(
-            "padding: 5px; color: #ffffff; background-color: #1e1e1e; border: 1px solid #555; font-weight: bold;")
+            "padding: 5px; color: #ffffff; background-color: #1e1e1e; border: 1px solid #555; font-weight: bold;"
+        )
         self.input_name.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.input_name)
 
-        # 3. Przycisk poprawy / potwierdzenia
         self.btn_confirm = QPushButton("Zmień / OK")
         self.btn_confirm.setStyleSheet("background-color: #444; color: white; padding: 4px;")
         self.btn_confirm.clicked.connect(self._on_confirm)
@@ -50,14 +66,17 @@ class FaceCard(QFrame):
         self.setLayout(layout)
 
     def _on_confirm(self):
+        """Emit the edited label and visually mark the card as reviewed."""
         new_name = self.input_name.text().strip()
         self.confirmed.emit(self.face_id, new_name)
-        self.setStyleSheet(
-            "background-color: #1a3320; border: 1px solid #28a745;")  # Zmiana koloru na zielony po potwierdzeniu
+        self.setStyleSheet("background-color: #1a3320; border: 1px solid #28a745;")
 
 
 class FaceInterface(QMainWindow):
+    """Main application window used to verify and adjust classifications."""
+
     def __init__(self):
+        """Create the application and initialize window widgets."""
         self.app = QApplication.instance()
         if not self.app:
             self.app = QApplication(sys.argv)
@@ -70,6 +89,7 @@ class FaceInterface(QMainWindow):
         self.show()
 
     def _setup_dark_theme(self):
+        """Apply a consistent dark palette to all Qt widgets."""
         self.app.setStyle("Fusion")
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(53, 53, 53))
@@ -82,17 +102,16 @@ class FaceInterface(QMainWindow):
         self.app.setPalette(palette)
 
     def _init_ui(self):
+        """Build the primary layout, grid area, and status controls."""
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
 
-        # Nagłówek
         header = QLabel("WYNIKI AUTOMATYCZNEJ KLASYFIKACJI (SVM)")
         header.setFont(QFont("Segoe UI", 16, QFont.Bold))
         header.setStyleSheet("color: #007acc; margin: 10px;")
         layout.addWidget(header)
 
-        # Obszar przewijania dla siatki twarzy
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("border: none; background-color: #1e1e1e;")
@@ -105,7 +124,6 @@ class FaceInterface(QMainWindow):
         self.scroll.setWidget(self.grid_container)
         layout.addWidget(self.scroll)
 
-        # --- SEKCJA: PASEK POSTĘPU ---
         self.progress_container = QFrame()
         self.progress_container.setStyleSheet("background-color: #2b2b2b; border-radius: 5px;")
         progress_layout = QVBoxLayout(self.progress_container)
@@ -118,24 +136,24 @@ class FaceInterface(QMainWindow):
         self.progressBar.setFixedHeight(15)
         self.progressBar.setTextVisible(True)
         self.progressBar.setAlignment(Qt.AlignCenter)
-        self.progressBar.setStyleSheet("""
-                    QProgressBar {
-                        border: 1px solid #444;
-                        border-radius: 7px;
-                        background-color: #1e1e1e;
-                        text-align: center;
-                        color: white;
-                    }
-                    QProgressBar::chunk {
-                        background-color: #007acc;
-                        border-radius: 6px;
-                    }
-                """)
+        self.progressBar.setStyleSheet(
+            """
+            QProgressBar {
+                border: 1px solid #444;
+                border-radius: 7px;
+                background-color: #1e1e1e;
+                text-align: center;
+                color: white;
+            }
+            QProgressBar::chunk {
+                background-color: #007acc;
+                border-radius: 6px;
+            }
+            """
+        )
         progress_layout.addWidget(self.progressBar)
+        layout.addWidget(self.progress_container)
 
-        layout.addWidget(self.progress_container)  # Dodajemy kontener do głównego układu
-
-        # Dolny pasek kontrolny
         controls = QHBoxLayout()
         btn_refresh = QPushButton("Odśwież widok")
         btn_refresh.clicked.connect(lambda: print("Refreshing..."))
@@ -146,30 +164,28 @@ class FaceInterface(QMainWindow):
         controls.addWidget(self.lbl_stats)
         layout.addLayout(controls)
 
-    # W interface.py
     def ask_for_scan_mode(self):
+        """Ask the user which data preparation mode should be used."""
         msg = QMessageBox()
         msg.setWindowTitle("Tryb Skanowania")
         msg.setText("Wybierz sposób przygotowania bazy:")
         full_btn = msg.addButton("Pełny Skan (YOLO)", QMessageBox.ActionRole)
         incr_btn = msg.addButton("Przyrostowy", QMessageBox.ActionRole)
         exist_btn = msg.addButton("Mam już wycięte twarze", QMessageBox.ActionRole)
-        cancel_btn = msg.addButton("Anuluj", QMessageBox.RejectRole)
+        msg.addButton("Anuluj", QMessageBox.RejectRole)
 
         msg.exec_()
 
-        if msg.clickedButton() == full_btn: return "full"
-        if msg.clickedButton() == incr_btn: return "incremental"
-        if msg.clickedButton() == exist_btn: return "use_existing"
+        if msg.clickedButton() == full_btn:
+            return "full"
+        if msg.clickedButton() == incr_btn:
+            return "incremental"
+        if msg.clickedButton() == exist_btn:
+            return "use_existing"
         return "cancel"
 
     def refresh_classified_faces(self, face_data_list, callback):
-        """
-        Czyści siatkę i ładuje nowe twarze sklasyfikowane przez SVM.
-        face_data_list: lista krotek (fid, name, is_manual)
-        callback: funkcja w main.py obsługująca zmianę imienia
-        """
-        # Czyszczenie siatki
+        """Rebuild the grid from `(face_id, label, ...)` records."""
         for i in reversed(range(self.grid_layout.count())):
             self.grid_layout.itemAt(i).widget().setParent(None)
 
@@ -181,7 +197,7 @@ class FaceInterface(QMainWindow):
         self.lbl_stats.setText(f"Załadowane twarze: {len(face_data_list)}")
 
     def bulk_verify_faces(self, face_ids):
-        """ Okno dialogowe dla DBSCAN z blokadą pustego imienia """
+        """Open a dialog to assign one label to a selected cluster."""
         self.final_selection = []
         self.bulk_name = ""
         dialog = QDialog(self)
@@ -189,19 +205,19 @@ class FaceInterface(QMainWindow):
         dialog.setMinimumSize(900, 700)
         dialog_layout = QVBoxLayout(dialog)
 
-        # 1. Pole wprowadzania imienia
         self.bulk_input = QLineEdit()
         self.bulk_input.setPlaceholderText("Wpisz imię dla tej grupy (WYMAGANE)...")
-        self.bulk_input.setStyleSheet("""
-            padding: 10px; 
-            font-size: 16px; 
-            background-color: #333; 
-            color: white; 
+        self.bulk_input.setStyleSheet(
+            """
+            padding: 10px;
+            font-size: 16px;
+            background-color: #333;
+            color: white;
             border: 2px solid #555;
-        """)
+            """
+        )
         dialog_layout.addWidget(self.bulk_input)
 
-        # 2. Obszar z twarzami
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         grid_widget = QWidget()
@@ -230,26 +246,28 @@ class FaceInterface(QMainWindow):
         scroll.setWidget(grid_widget)
         dialog_layout.addWidget(scroll)
 
-        # 3. Przycisk zatwierdzenia z blokadą
         btn_confirm = QPushButton("Zatwierdź grupę")
-        # Domyślnie wyłączamy przycisk i nadajemy mu styl "zablokowany"
         btn_confirm.setEnabled(False)
-        btn_confirm.setStyleSheet("""
+        btn_confirm.setStyleSheet(
+            """
             QPushButton:disabled { background-color: #444; color: #888; }
             QPushButton:enabled { background-color: #28a745; color: white; font-weight: bold; }
             height: 40px;
-        """)
+            """
+        )
 
-        # Funkcja sprawdzająca czy pole nie jest puste
         def validate_bulk_input():
+            """Enable confirmation only when the name field is non-empty."""
             is_valid = len(self.bulk_input.text().strip()) > 0
             btn_confirm.setEnabled(is_valid)
             if is_valid:
                 self.bulk_input.setStyleSheet(
-                    "padding: 10px; font-size: 16px; background-color: #333; color: white; border: 2px solid #28a745;")
+                    "padding: 10px; font-size: 16px; background-color: #333; color: white; border: 2px solid #28a745;"
+                )
             else:
                 self.bulk_input.setStyleSheet(
-                    "padding: 10px; font-size: 16px; background-color: #333; color: white; border: 2px solid #555;")
+                    "padding: 10px; font-size: 16px; background-color: #333; color: white; border: 2px solid #555;"
+                )
 
         self.bulk_input.textChanged.connect(validate_bulk_input)
 
@@ -264,63 +282,61 @@ class FaceInterface(QMainWindow):
         return None, None
 
     def show_startup_progress(self, total):
+        """Show modal progress dialog used during startup operations."""
         self.progress_dialog = QProgressDialog("Analizowanie bazy...", "Anuluj", 0, total)
         self.progress_dialog.setWindowModality(Qt.ApplicationModal)
         self.progress_dialog.show()
 
     def update_startup_progress(self, value, text):
-        if hasattr(self, 'progress_dialog'):
+        """Update startup dialog progress and text if the dialog exists."""
+        if hasattr(self, "progress_dialog"):
             self.progress_dialog.setValue(value)
             self.progress_dialog.setLabelText(text)
             QApplication.processEvents()
 
     def close_startup_progress(self):
-        if hasattr(self, 'progress_dialog'):
+        """Close startup progress dialog if it was created."""
+        if hasattr(self, "progress_dialog"):
             self.progress_dialog.close()
 
-    # Wewnątrz klasy okna GUI
     def start_scanning(self):
+        """Run initial scanning and stream updates into the progress widgets."""
+
         def update_bar(current, total, text):
             self.progressBar.setMaximum(total)
             self.progressBar.setValue(current)
             self.statusLabel.setText(text)
-            # Wymuszenie odświeżenia GUI, jeśli nie używasz wątków
             self.app.processEvents()
 
         self.controller.run_initial_scan(progress_callback=update_bar)
 
     def update_progress(self, current: int, total: int, message: str = ""):
-        """
-        Aktualizuje pasek postępu oraz (opcjonalnie) etykietę statusu.
-        current: aktualny numer elementu
-        total: całkowita liczba elementów
-        message: tekst wyświetlany na pasku lub statusie
-        """
+        """Update main progress bar with percentage and optional status message."""
         if total > 0:
             percentage = int((current / total) * 100)
             self.progressBar.setValue(percentage)
 
-            # Opcjonalnie: ustawienie tekstu na pasku (jeśli progressBar.setTextVisible(True))
             if message:
                 self.progressBar.setFormat(f"{message} ({percentage}%)")
             else:
-                self.progressBar.setFormat(f"%p%")
+                self.progressBar.setFormat("%p%")
 
-        # Bardzo ważne: Wymuszenie przerysowania widżetu
+        # Force repaint to keep UI responsive during long synchronous loops.
         self.progressBar.repaint()
 
     def update_face_stats(self, count: int):
-        """Aktualizuje tekst statystyk na dolnym pasku."""
+        """Refresh bottom-bar text with total detected face count."""
         self.lbl_stats.setText(f"Wykryto łącznie twarzy: {count}")
 
     @staticmethod
     def confirm_all_labels():
+        """Ask whether to generate labeled visualization outputs."""
         reply = QMessageBox.question(
-            None,  # Lub self.ui jeśli main.py dziedziczy/ma dostęp do QMainWindow
-            'Generowanie wizualizacji',
-            'Klasyfikacja zakończona pomyślnie. Czy chcesz wygenerować folder z podpisanymi zdjęciami (dla wszystkich twarzy w bazie)?',
+            None,
+            "Generowanie wizualizacji",
+            "Klasyfikacja zakończona pomyślnie. Czy chcesz wygenerować folder z podpisanymi zdjęciami (dla wszystkich twarzy w bazie)?",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
+            QMessageBox.Yes,
         )
         if reply == QMessageBox.Yes:
             return 0

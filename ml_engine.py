@@ -1,31 +1,30 @@
-from ultralytics import YOLO
-import numpy as np
+﻿"""Machine-learning components for face extraction, clustering, and classification."""
+
 import cv2
-from sklearn.svm import SVC
-from sklearn.multiclass import OneVsRestClassifier
+import numpy as np
 from sklearn.cluster import DBSCAN
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GridSearchCV
 from sklearn.decomposition import PCA
+from sklearn.model_selection import GridSearchCV
+from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from ultralytics import YOLO
 
 
 class FaceExtractor:
-    """
-    Moduł Ekstrakcji Cech.
-    Odpowiada za detekcję twarzy (YOLO) i zamianę obrazu na wektor liczbowy (HOG).
-    Zasada SRP: Nie zajmuje się klasyfikacją ani bazą danych.
-    """
+    """Detect faces with YOLO and compute HOG embeddings for each crop."""
 
     def __init__(self, config):
-        """Inicjalizuje model detekcji YOLO na CPU/GPU."""
+        """Load the YOLO detector using paths from the config object."""
         self.config = config
         self.detector = YOLO(config.YOLO_MODEL_PATH)
 
     def extract_face_data(self, image_path: str) -> list:
-        """Wykrywa twarze na obrazie, wycina je i generuje wektory HOG."""
+        """Return detected faces as dictionaries with crop, bbox, and embedding."""
         img = cv2.imread(image_path)
-        if img is None: return []
+        if img is None:
+            return []
 
         results = self.detector(image_path, conf=self.config.CONFIDENCE_THRESHOLD, verbose=False)[0]
         faces_data = []
@@ -37,97 +36,90 @@ class FaceExtractor:
         for box in results.boxes:
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
 
-            # Padding (margines)
+            # Add context around the face to make embeddings less brittle.
             w_box, h_box = x2 - x1, y2 - y1
             pad = 0.2
             x1, y1 = max(0, int(x1 - w_box * pad)), max(0, int(y1 - h_box * pad))
             x2, y2 = min(img_w, int(x2 + w_box * pad)), min(img_h, int(y2 + h_box * pad))
 
             face_crop = img[y1:y2, x1:x2]
-            if face_crop.size == 0: continue
+            if face_crop.size == 0:
+                continue
 
-            # Preprocessing GUI & HOG
             display_crop = cv2.resize(face_crop, (160, 160), interpolation=cv2.INTER_LANCZOS4)
-            gray = cv2.cvtColor(cv2.resize(face_crop, (64, 64), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+            gray = cv2.cvtColor(
+                cv2.resize(face_crop, (64, 64), interpolation=cv2.INTER_AREA),
+                cv2.COLOR_BGR2GRAY,
+            )
             gray = clahe.apply(gray)
 
-            # Ekstrakcja cech (HOG)
             embedding = np.array(hog.compute(gray)).flatten().astype(np.float32)
             embedding = embedding / (np.linalg.norm(embedding) + 1e-6)
 
-            faces_data.append({
-                "crop": display_crop,
-                "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                "embedding": embedding.tolist()
-            })
+            faces_data.append(
+                {
+                    "crop": display_crop,
+                    "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                    "embedding": embedding.tolist(),
+                }
+            )
 
         return faces_data
 
 
-
 class FaceClassifier:
-    """
-    Moduł Uczenia Maszynowego.
-    Odpowiada za logikę grupowania (DBSCAN) i klasyfikacji nadzorowanej (Multi-class SVM).
-    """
+    """Cluster unlabeled faces and run multi-class SVM classification."""
 
     def __init__(self):
-        """Inicjalizuje globalny model klasyfikatora."""
+        """Initialize classifier state."""
         self.svm_model = None
         self.is_trained = False
 
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
-        """Grupuje niepodpisane twarze w klastry używając algorytmu DBSCAN."""
-        dbscan = DBSCAN(eps=0.1, min_samples=3, metric='cosine')
+        """Group unlabeled embeddings using DBSCAN with cosine distance."""
+        dbscan = DBSCAN(eps=0.1, min_samples=3, metric="cosine")
         labels = dbscan.fit_predict(embeddings)
 
         clusters = {}
         for fid, label in zip(fids, labels):
-            # if label == -1: continue  # Odrzucamy szum
-            if label not in clusters: clusters[label] = []
+            if label not in clusters:
+                clusters[label] = []
             clusters[label].append(fid)
         return clusters
 
-    def train_multiclass_svm(self, X_train: list, y_train_labels: list) -> None:
+    def train_multiclass_svm(self, x_train: list, y_train_labels: list) -> None:
+        """Train an One-vs-Rest SVM pipeline with grid search."""
         if len(set(y_train_labels)) < 2:
             return
 
-        # 1. Tworzymy Pipeline: Skalowanie -> PCA -> OneVsRest(SVC)
-        # Zauważ, że SVC jest teraz wewnątrz OneVsRestClassifier
-        pipe = Pipeline([
-            ('scaler', StandardScaler()),
-            ('pca', PCA(n_components=0.90)),
-            ('clf', OneVsRestClassifier(SVC(kernel='rbf', probability=True, class_weight='balanced')))
-        ])
+        pipe = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("pca", PCA(n_components=0.90)),
+                ("clf", OneVsRestClassifier(SVC(kernel="rbf", probability=True, class_weight="balanced"))),
+            ]
+        )
 
-        # 2. Definiujemy siatkę parametrów
-        # UWAGA: Ponieważ SVC jest teraz "wnukiem" Pipeline'u (przez OneVsRest),
-        # dostęp do parametrów mamy przez: nazwaStepu__estimator__parametr
         param_grid = {
-            'clf__estimator__C': [0.1, 1, 10, 100],
-            'clf__estimator__gamma': [0.001, 0.01, 0.1, 'scale']
+            "clf__estimator__C": [0.1, 1, 10, 100],
+            "clf__estimator__gamma": [0.001, 0.01, 0.1, "scale"],
         }
 
-        # 3. Szukanie najlepszych ustawień
         search = GridSearchCV(pipe, param_grid, cv=3, n_jobs=-1)
-        search.fit(np.array(X_train), y_train_labels)
+        search.fit(np.array(x_train), y_train_labels)
 
-        # Zapisujemy cały Pipeline jako nasz model
         self.svm_model = search.best_estimator_
         self.is_trained = True
 
-        print(f"Najlepsze parametry (OvR): {search.best_params_}")
-        print(f"Najlepszy wynik (cross-val): {search.best_score_:.2%}")
+        print(f"Best parameters (OvR): {search.best_params_}")
+        print(f"Best cross-validation score: {search.best_score_:.2%}")
 
-
-    def predict_unlabeled(self, X_test: list) -> tuple:
-        """
-        Ocenia niepodpisane twarze. Zwraca przewidywane etykiety i pewność predykcji.
-        """
+    def predict_unlabeled(self, x_test: list) -> tuple:
+        """Predict labels and confidence scores for unlabeled embeddings."""
         if not self.is_trained:
             return [], []
 
-        predictions = self.svm_model.predict(X_test)
-        probabilities = np.max(self.svm_model.predict_proba(X_test), axis=1)
+        predictions = self.svm_model.predict(x_test)
+        probabilities = np.max(self.svm_model.predict_proba(x_test), axis=1)
 
         return predictions, probabilities
