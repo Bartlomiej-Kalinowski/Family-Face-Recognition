@@ -32,6 +32,7 @@ class FaceDatabase:
         self._cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS faces (
+                original_image TEXT,
                 face_id TEXT PRIMARY KEY,
                 image_path TEXT,
                 bbox TEXT,
@@ -52,7 +53,7 @@ class FaceDatabase:
         self._cursor.execute("CREATE INDEX IF NOT EXISTS idx_image ON faces(image_path)")
         self._conn.commit()
 
-    def save_face(self, face_img, face_id, original_path, bbox, embedding=None, is_test=0):
+    def save_face(self, orig_image, face_img, face_id, original_path, bbox, embedding=None, is_test=0):
         """Save a cropped face image and its metadata entry."""
         face_path = os.path.join(self.config.FACES_DIR, f"{face_id}.jpg")
 
@@ -66,10 +67,10 @@ class FaceDatabase:
         try:
             self._cursor.execute(
                 """
-                INSERT OR REPLACE INTO faces (face_id, image_path, bbox, manual_label, embedding, is_test)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO faces (original_image, face_id, image_path, bbox, manual_label, embedding, is_test)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (face_id, original_path, json.dumps(bbox), None, emb_json, is_test),
+                (orig_image, face_id, original_path, json.dumps(bbox), None, emb_json, is_test),
             )
         except Exception as e:
             print(f"[SQL ERROR] save_face: {e}")
@@ -143,10 +144,11 @@ class FaceDatabase:
         """Return all labeled faces with manual labels preferred over model labels."""
         self._cursor.execute(
             """
-            SELECT face_id,
+            SELECT original_image, face_id,
                    COALESCE(manual_label, svm_prediction) AS final_label,
                    manual_label,
-                   image_path
+                   image_path,
+                   bbox
             FROM faces
             WHERE manual_label IS NOT NULL OR svm_prediction IS NOT NULL
             """
@@ -185,3 +187,31 @@ class FaceDatabase:
 
         result = self._cursor.fetchone()
         return result[0] if result and result[0] else "Unknown"
+
+    def rename_face_record(self, old_face_id: str, new_face_id: str, new_image_path: str) -> str:
+        """Rename record and update path.
+
+        Returns one of: `updated`, `missing_old`, `collision`.
+        """
+        self._cursor.execute("SELECT 1 FROM faces WHERE face_id = ?", (old_face_id,))
+        if not self._cursor.fetchone():
+            return "missing_old"
+
+        if old_face_id == new_face_id:
+            self._cursor.execute(
+                "UPDATE faces SET image_path = ? WHERE face_id = ?",
+                (new_image_path, old_face_id),
+            )
+            self._conn.commit()
+            return "updated"
+
+        self._cursor.execute("SELECT 1 FROM faces WHERE face_id = ?", (new_face_id,))
+        if self._cursor.fetchone():
+            return "collision"
+
+        self._cursor.execute(
+            "UPDATE faces SET face_id = ?, image_path = ? WHERE face_id = ?",
+            (new_face_id, new_image_path, old_face_id),
+        )
+        self._conn.commit()
+        return "updated"

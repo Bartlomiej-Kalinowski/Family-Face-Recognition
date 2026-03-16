@@ -58,6 +58,7 @@ class FaceExtractor:
 
             faces_data.append(
                 {
+                    "original_image": image_path,
                     "crop": display_crop,
                     "bbox": [int(x1), int(y1), int(x2), int(y2)],
                     "embedding": embedding.tolist(),

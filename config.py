@@ -11,7 +11,7 @@ class Config:
     YOLO_MODEL_PATH = "./face_detection_model/yolov8n-face.pt"
 
     BASE_DIR = Path(__file__).resolve().parent
-    SOURCE_DIR = str(BASE_DIR / "da_images")
+    SOURCE_DIR = str(BASE_DIR / "test_images")
     OUTPUT_DIR = str(BASE_DIR / "output_data")
 
     ANNOTATED_FACES_DIR = os.path.join(OUTPUT_DIR, "annotated_faces")

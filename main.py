@@ -88,7 +88,7 @@ class SmartLabelerController:
                 for j, face in enumerate(detected_faces):
                     fid = f"{safe_name}_f{j}"
                     clean_emb = np.array(face["embedding"]).flatten().astype(np.float32).tolist()
-                    self.db.save_face(face["crop"], fid, full_path, face["bbox"], clean_emb)
+                    self.db.save_face(face["original_image"],face["crop"], fid, full_path, face["bbox"], clean_emb)
 
                 self.db.mark_as_processed(full_path)
                 self.db._conn.commit()
@@ -242,52 +242,19 @@ class SmartLabelerController:
         return name_part
 
     def rebuild_db_from_files(self):
-        """Rebuild face records by importing files from the extracted-face directory."""
-        print("Rozpoczynam odbudowę bazy na podstawie istniejących wycinków...")
-
-        self.db.clear_database()
-
-        face_folder = self.config.FACES_DIR
-        files = [name for name in os.listdir(face_folder) if name.endswith((".jpg", ".jpeg", ".png"))]
-
-        if not files:
-            print("Folder z twarzami jest pusty!")
-            return
-
-        total = len(files)
-        for i, filename in enumerate(files):
-            full_path = os.path.join(face_folder, filename)
-            face_img = cv2.imread(full_path)
-
-            if face_img is None:
-                continue
-
-            gt_label = self.get_gt_from_path(full_path)
-
-            gray = cv2.cvtColor(cv2.resize(face_img, (64, 64)), cv2.COLOR_BGR2GRAY)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            gray = clahe.apply(gray)
-
-            hog = cv2.HOGDescriptor((64, 64), (16, 16), (8, 8), (8, 8), 9)
-            embedding = np.array(hog.compute(gray)).flatten().astype(np.float32)
-            embedding = embedding / (np.linalg.norm(embedding) + 1e-6)
-
-            face_id = os.path.splitext(filename)[0]
-            emb_json = json.dumps(embedding.tolist())
-            self.db._cursor.execute(
-                """
-                INSERT INTO faces (face_id, image_path, embedding, is_test)
-                VALUES (?, ?, ?, ?)
-                """,
-                (face_id, full_path, emb_json, 0),
-            )
-
-            if hasattr(self, "ui"):
-                self.ui.update_progress(i + 1, total, f"Import: {gt_label}")
-                QApplication.processEvents()
-
+        """Clear only label fields for existing rows, keeping all other metadata intact."""
+        print("Czyszczenie etykiet manualnych i SVM (bez naruszania pozostałych pól)...")
+        self.db._cursor.execute(
+            """
+            UPDATE faces
+            SET manual_label = NULL,
+                svm_prediction = NULL
+            WHERE manual_label IS NOT NULL OR svm_prediction IS NOT NULL
+            """
+        )
+        updated_rows = self.db._cursor.rowcount
         self.db._conn.commit()
-        print(f"Baza odbudowana. Zaimportowano {total} twarzy.")
+        print(f"Wyczyszczono etykiety w {updated_rows} rekordach.")
 
     def draw_all_labels_on_faces(self, target_dir):
         """Draw labels on face images and save visualized results to `target_dir`."""
@@ -295,11 +262,14 @@ class SmartLabelerController:
 
         results = self.db.get_all_labeled_faces()
 
-        for face_id, label, is_manual, original_img_path in results:
-            img_path = os.path.join(target_dir, f"{face_id}.jpg")
+        for original_image_path, face_id, label, is_manual, img_path, bbox_json in results:
+            img_path = os.path.join(self.config.ANNOTATED_FACES_DIR, os.path.basename(original_image_path))
+            print("Sciezka: ", img_path)
+            print("sciezka z bazy: ", original_image_path)
 
             if not os.path.exists(img_path):
-                shutil.copy2(original_img_path, img_path)
+                shutil.copy2(original_image_path, img_path)
+                print("Kopiowano obraz z : ", original_image_path)
 
             img = cv2.imread(img_path)
             if img is None:
@@ -312,14 +282,49 @@ class SmartLabelerController:
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = max(0.4, w / 300)
 
-            cv2.rectangle(img, (0, 0), (w - 1, h - 1), color, thickness)
+            # Draw stored YOLO bbox on the original image.
+            try:
+                bbox = json.loads(bbox_json) if isinstance(bbox_json, str) else bbox_json
+                print("bbox: ", bbox)
+                if not isinstance(bbox, list) or len(bbox) != 4:
+                    raise ValueError("Invalid bbox format")
+                x1, y1, x2, y2 = [int(v) for v in bbox]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+
+            x1 = max(0, min(x1, w - 1))
+            y1 = max(0, min(y1, h - 1))
+            x2 = max(0, min(x2, w - 1))
+            y2 = max(0, min(y2, h - 1))
+
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
 
             source_tag = "[MANUAL]" if is_manual else "[SVM]"
             label_text = f"{source_tag} {label.upper()}"
 
             (lbl_w, lbl_h), _ = cv2.getTextSize(label_text, font, font_scale, 1)
-            cv2.rectangle(img, (0, 0), (lbl_w + 10, lbl_h + 15), color, -1)
-            cv2.putText(img, label_text, (5, lbl_h + 8), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+            label_x = x1
+            label_y = max(lbl_h + 12, y1)
+            cv2.rectangle(
+                img,
+                (label_x, label_y - lbl_h - 12),
+                (min(label_x + lbl_w + 10, w - 1), label_y),
+                color,
+                -1,
+            )
+            cv2.putText(
+                img,
+                label_text,
+                (label_x + 5, label_y - 6),
+                font,
+                font_scale,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
             cv2.imwrite(img_path, img)
 
