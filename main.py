@@ -18,7 +18,7 @@ except Exception:
 
 import cv2
 import numpy as np
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 from sklearn.metrics import accuracy_score, classification_report, f1_score
 from tqdm import tqdm
 
@@ -38,6 +38,7 @@ class SmartLabelerController:
         self.extractor = FaceExtractor(self.config)
         self.classifier = FaceClassifier()
         self.ui = FaceInterface()
+        self.ui.set_visualize_callback(self._on_generate_visualization_clicked)
 
     def _manual_fix_callback(self, face_id: str, new_name: str) -> None:
         """Persist a manual label correction triggered from the UI."""
@@ -211,10 +212,25 @@ class SmartLabelerController:
 
         classified_list = list(zip(fids, y_pred))
         self.ui.refresh_classified_faces(classified_list, self._manual_fix_callback)
+        self.ui.set_visualization_enabled(True)
+        QMessageBox.information(
+            self.ui,
+            "Weryfikacja etykiet",
+            "Możesz teraz poprawić etykiety ręcznie w kafelkach.\n"
+            "Gdy skończysz, kliknij przycisk 'Generuj wizualizacje'.",
+        )
 
+    def _on_generate_visualization_clicked(self) -> None:
+        """Generate annotated images after optional manual corrections in the grid."""
         reply = self.ui.confirm_all_labels()
-        if reply == 0:
+        if reply != 0:
+            return
+
+        self.ui.set_visualization_enabled(False)
+        try:
             self.draw_all_labels_on_faces(self.config.ANNOTATED_FACES_DIR)
+        finally:
+            self.ui.set_visualization_enabled(True)
 
     def start(self) -> None:
         """Start the application workflow based on the selected scan mode."""
@@ -263,13 +279,10 @@ class SmartLabelerController:
         results = self.db.get_all_labeled_faces()
 
         for original_image_path, face_id, label, is_manual, img_path, bbox_json in results:
-            img_path = os.path.join(self.config.ANNOTATED_FACES_DIR, os.path.basename(original_image_path))
-            print("Sciezka: ", img_path)
-            print("sciezka z bazy: ", original_image_path)
+            img_path = os.path.join(target_dir, os.path.basename(original_image_path))
 
             if not os.path.exists(img_path):
                 shutil.copy2(original_image_path, img_path)
-                print("Kopiowano obraz z : ", original_image_path)
 
             img = cv2.imread(img_path)
             if img is None:
@@ -277,10 +290,11 @@ class SmartLabelerController:
 
             h, w, _ = img.shape
 
-            color = (0, 255, 0) if is_manual else (0, 165, 255)
-            thickness = 2
+            box_color = (60, 170, 75) if is_manual else (200, 140, 70)
+            label_bg = (26, 26, 26)
+            text_color = (245, 245, 245)
+            thickness = max(1, min(3, int(min(h, w) / 450)))
             font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = max(0.4, w / 300)
 
             # Draw stored YOLO bbox on the original image.
             try:
@@ -300,35 +314,44 @@ class SmartLabelerController:
             if x2 <= x1 or y2 <= y1:
                 continue
 
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
+            bbox_height = max(1, y2 - y1)
+            font_scale = max(0.35, min(0.62, bbox_height / 230))
+            font_thickness = max(1, int(round(font_scale * 2)))
+
+            cv2.rectangle(img, (x1, y1), (x2, y2), box_color, thickness)
 
             source_tag = "[MANUAL]" if is_manual else "[SVM]"
             label_text = f"{source_tag} {label.upper()}"
 
-            (lbl_w, lbl_h), _ = cv2.getTextSize(label_text, font, font_scale, 1)
+            (lbl_w, lbl_h), _ = cv2.getTextSize(label_text, font, font_scale, font_thickness)
             label_x = x1
-            label_y = max(lbl_h + 12, y1)
+            label_y = max(lbl_h + 10, y1)
             cv2.rectangle(
                 img,
-                (label_x, label_y - lbl_h - 12),
+                (label_x, label_y - lbl_h - 10),
                 (min(label_x + lbl_w + 10, w - 1), label_y),
-                color,
+                label_bg,
                 -1,
+            )
+            cv2.rectangle(
+                img,
+                (label_x, label_y - lbl_h - 10),
+                (min(label_x + lbl_w + 10, w - 1), label_y),
+                box_color,
+                1,
             )
             cv2.putText(
                 img,
                 label_text,
-                (label_x + 5, label_y - 6),
+                (label_x + 5, label_y - 5),
                 font,
                 font_scale,
-                (255, 255, 255),
-                1,
+                text_color,
+                font_thickness,
                 cv2.LINE_AA,
             )
 
             cv2.imwrite(img_path, img)
-
-        from PyQt5.QtWidgets import QMessageBox
 
         QMessageBox.information(None, "Sukces", f"Zapisano wizualizacje w:\n{target_dir}")
         print(f"[SUKCES] Folder '{target_dir}' został zaktualizowany o ramki.")

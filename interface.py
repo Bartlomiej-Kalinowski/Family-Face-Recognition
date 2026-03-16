@@ -159,6 +159,17 @@ class FaceInterface(QMainWindow):
         btn_refresh.clicked.connect(lambda: print("Refreshing..."))
         controls.addWidget(btn_refresh)
 
+        self.btn_generate_visualization = QPushButton("Generuj wizualizacje")
+        self.btn_generate_visualization.setEnabled(False)
+        self.btn_generate_visualization.setVisible(False)
+        self.btn_generate_visualization.setStyleSheet(
+            """
+            QPushButton:disabled { background-color: #444; color: #888; }
+            QPushButton:enabled { background-color: #1f6f8b; color: white; font-weight: bold; }
+            """
+        )
+        controls.addWidget(self.btn_generate_visualization)
+
         self.lbl_stats = QLabel("Załadowane twarze: 0")
         controls.addStretch()
         controls.addWidget(self.lbl_stats)
@@ -187,14 +198,39 @@ class FaceInterface(QMainWindow):
     def refresh_classified_faces(self, face_data_list, callback):
         """Rebuild the grid from `(face_id, label, ...)` records."""
         for i in reversed(range(self.grid_layout.count())):
-            self.grid_layout.itemAt(i).widget().setParent(None)
+            widget = self.grid_layout.itemAt(i).widget()
+            if widget is not None:
+                widget.setParent(None)
 
-        for i, (fid, name, *_) in enumerate(face_data_list):
+        for i, row in enumerate(face_data_list):
+            fid, name = self._parse_face_row(row)
+            if not fid:
+                continue
             card = FaceCard(fid, name)
             card.confirmed.connect(callback)
             self.grid_layout.addWidget(card, i // 6, i % 6)
 
         self.lbl_stats.setText(f"Załadowane twarze: {len(face_data_list)}")
+
+    @staticmethod
+    def _parse_face_row(row):
+        """Normalize row formats from SVM output and full DB output."""
+        if len(row) >= 3 and isinstance(row[0], str) and os.path.sep in row[0]:
+            return str(row[1]), str(row[2] or "Unknown")
+
+        if len(row) >= 2:
+            return str(row[0]), str(row[1] or "Unknown")
+
+        return "", "Unknown"
+
+    def set_visualize_callback(self, callback):
+        """Connect controller callback for visualization generation action."""
+        self.btn_generate_visualization.clicked.connect(callback)
+
+    def set_visualization_enabled(self, enabled: bool):
+        """Show and toggle visualization button after SVM phase."""
+        self.btn_generate_visualization.setVisible(True)
+        self.btn_generate_visualization.setEnabled(enabled)
 
     def bulk_verify_faces(self, face_ids):
         """Open a dialog to assign one label to a selected cluster."""
@@ -334,7 +370,8 @@ class FaceInterface(QMainWindow):
         reply = QMessageBox.question(
             None,
             "Generowanie wizualizacji",
-            "Klasyfikacja zakończona pomyślnie. Czy chcesz wygenerować folder z podpisanymi zdjęciami (dla wszystkich twarzy w bazie)?",
+            "Czy na pewno wygenerować folder z podpisanymi zdjęciami? "
+            "Zostaną użyte aktualne etykiety po Twoich poprawkach.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
