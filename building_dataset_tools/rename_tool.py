@@ -1,5 +1,6 @@
 """Interactive helper for labeling/renaming cropped faces with DB sync."""
 
+import json
 import os
 import re
 from collections import defaultdict
@@ -8,6 +9,8 @@ import cv2
 
 from config import Config
 from database import FaceDatabase
+
+PROGRESS_FILE_NAME = ".label_progress.json"
 
 
 def _sanitize_label(label: str) -> str:
@@ -55,6 +58,51 @@ def _rename_file_and_sync_db(
     print(f"  [!] DB collision for '{new_face_id}', restored original file name.")
 
 
+def _progress_path(folder_path: str) -> str:
+    """Return the path to the per-folder labeling progress file."""
+    return os.path.join(folder_path, PROGRESS_FILE_NAME)
+
+
+def _load_progress(folder_path: str) -> dict | None:
+    """Load progress from JSON if it exists and is valid."""
+    path = _progress_path(folder_path)
+    if not os.path.exists(path):
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(state, dict):
+        return None
+    if not isinstance(state.get("remaining_files"), list):
+        return None
+    if not isinstance(state.get("label_counts"), dict):
+        return None
+
+    return state
+
+
+def _save_progress(folder_path: str, remaining_files: list[str], label_counts: dict[str, int]) -> None:
+    """Persist current progress so labeling can continue later."""
+    state = {
+        "folder_path": os.path.abspath(folder_path),
+        "remaining_files": remaining_files,
+        "label_counts": label_counts,
+    }
+    with open(_progress_path(folder_path), "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=True, indent=2)
+
+
+def _clear_progress(folder_path: str) -> None:
+    """Remove saved progress after completion or reset."""
+    path = _progress_path(folder_path)
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def label_and_rename_images(folder_path: str, db: FaceDatabase) -> None:
     """Bulk mode: generate names as `<label>_<index>.ext`."""
     valid_extensions = (".png", ".jpg", ".jpeg")
@@ -62,30 +110,58 @@ def label_and_rename_images(folder_path: str, db: FaceDatabase) -> None:
         print(f"Error: folder '{folder_path}' does not exist.")
         return
 
-    images = [f for f in os.listdir(folder_path) if f.lower().endswith(valid_extensions)]
-    if not images:
-        print("No images found in folder.")
-        return
+    images = sorted(f for f in os.listdir(folder_path) if f.lower().endswith(valid_extensions))
+    saved_state = _load_progress(folder_path)
 
     label_counts = defaultdict(int)
-    print(f"Found {len(images)} images.")
-    print("Type label, 's' to skip, 'q' to quit.")
+    if saved_state:
+        decision = input("Found saved progress. Type 'c' to continue or 'r' to reset > ").strip().lower()
+        if decision == "c":
+            remaining = [f for f in saved_state["remaining_files"] if os.path.exists(os.path.join(folder_path, f))]
+            for key, value in saved_state["label_counts"].items():
+                try:
+                    label_counts[str(key)] = int(value)
+                except (TypeError, ValueError):
+                    continue
+            images = remaining
+            print(f"Resumed session. Remaining images: {len(images)}")
+        elif decision == "r":
+            _clear_progress(folder_path)
+            print("Progress reset. Starting from scratch.")
+        else:
+            print("Unknown option, starting from scratch.")
+            _clear_progress(folder_path)
 
-    for img_name in images:
+    if not images:
+        print("No images found in folder.")
+        _clear_progress(folder_path)
+        return
+
+    print(f"Images in current session: {len(images)}")
+    print("Type label, 's' to skip, 'q' to save and quit.")
+
+    for idx, img_name in enumerate(images):
         old_path = os.path.join(folder_path, img_name)
+        remaining_after_current = images[idx + 1 :]
+
         if not _preview_image(old_path):
+            _save_progress(folder_path, remaining_after_current, dict(label_counts))
             continue
 
         label = input(f"Who is in '{img_name}'? > ").strip()
         if label.lower() == "q":
+            _save_progress(folder_path, images[idx:], dict(label_counts))
+            print("Progress saved. You can resume later.")
             break
         if label.lower() == "s" or not label:
             print("  [-] Skipped.")
+            _save_progress(folder_path, remaining_after_current, dict(label_counts))
             continue
 
         safe_label = _sanitize_label(label)
         if not safe_label:
             print("  [!] Invalid label after sanitization.")
+            _save_progress(folder_path, remaining_after_current, dict(label_counts))
             continue
 
         label_counts[safe_label] += 1
@@ -96,6 +172,7 @@ def label_and_rename_images(folder_path: str, db: FaceDatabase) -> None:
         new_path = os.path.join(folder_path, new_name)
         if os.path.exists(new_path):
             print(f"  [!] Target exists: {new_name}")
+            _save_progress(folder_path, remaining_after_current, dict(label_counts))
             continue
 
         old_face_id = os.path.splitext(img_name)[0]
@@ -105,6 +182,11 @@ def label_and_rename_images(folder_path: str, db: FaceDatabase) -> None:
             _rename_file_and_sync_db(db, old_path, new_path, old_face_id, new_face_id)
         except Exception as exc:
             print(f"  [!] Rename failed: {exc}")
+        finally:
+            _save_progress(folder_path, remaining_after_current, dict(label_counts))
+    else:
+        _clear_progress(folder_path)
+        print("Session complete. Progress file removed.")
 
     cv2.destroyAllWindows()
     print("Done.")

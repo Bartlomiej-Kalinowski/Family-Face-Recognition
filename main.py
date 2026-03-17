@@ -1,5 +1,6 @@
 ﻿"""Application controller tying together UI, database, and ML workflows."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -63,7 +64,7 @@ class SmartLabelerController:
             os.path.normpath(os.path.abspath(os.path.join(root, f_name)))
             for root, _, files in os.walk(self.config.SOURCE_DIR)
             for f_name in files
-            if f_name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))
+            if f_name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".heic"))
         ]
 
         processed_paths = set(self.db.get_all_processed_paths())
@@ -272,25 +273,72 @@ class SmartLabelerController:
         self.db._conn.commit()
         print(f"Wyczyszczono etykiety w {updated_rows} rekordach.")
 
+    def _get_visualization_path(self, original_image_path: str, target_dir: str) -> str:
+        """Build a collision-safe output path for an annotated source image."""
+        original_abs = os.path.abspath(original_image_path)
+        source_abs = os.path.abspath(self.config.SOURCE_DIR)
+
+        try:
+            rel_path = os.path.relpath(original_abs, source_abs)
+        except ValueError:
+            rel_path = ""
+
+        if rel_path and not rel_path.startswith("..") and not os.path.isabs(rel_path):
+            target_path = os.path.join(target_dir, rel_path)
+        else:
+            digest = hashlib.sha1(original_abs.encode("utf-8")).hexdigest()[:12]
+            target_path = os.path.join(target_dir, f"{digest}_{os.path.basename(original_abs)}")
+
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        return target_path
+
+    @staticmethod
+    def _parse_bbox(bbox_raw):
+        """Parse bbox from DB and normalize to integer XYXY order."""
+        if bbox_raw is None:
+            return None
+
+        if isinstance(bbox_raw, str):
+            bbox = json.loads(bbox_raw)
+        else:
+            bbox = bbox_raw
+
+        if isinstance(bbox, dict):
+            keys = ("x1", "y1", "x2", "y2")
+            if not all(k in bbox for k in keys):
+                return None
+            values = [bbox[k] for k in keys]
+        elif isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            values = list(bbox)
+        else:
+            return None
+
+        x1, y1, x2, y2 = [int(round(float(v))) for v in values]
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        return x1, y1, x2, y2
+
     def draw_all_labels_on_faces(self, target_dir):
         """Draw labels on face images and save visualized results to `target_dir`."""
         print("[SYSTEM] Generowanie boksów i etykiet na wszystkich twarzach...")
 
         results = self.db.get_all_labeled_faces()
 
-        for original_image_path, face_id, label, is_manual, img_path, bbox_json in results:
-            img_path = os.path.join(target_dir, os.path.basename(original_image_path))
+        for original_image_path, _face_id, label, is_manual, _source_image_path, bbox_raw in results:
+            visualized_path = self._get_visualization_path(original_image_path, target_dir)
 
-            if not os.path.exists(img_path):
-                shutil.copy2(original_image_path, img_path)
+            if not os.path.exists(visualized_path):
+                shutil.copy2(original_image_path, visualized_path)
 
-            img = cv2.imread(img_path)
+            img = cv2.imread(visualized_path)
             if img is None:
                 continue
 
             h, w, _ = img.shape
 
-            box_color = (60, 170, 75) if is_manual else (200, 140, 70)
+            box_color = (60, 170, 75) if bool(is_manual) else (200, 140, 70)
             label_bg = (26, 26, 26)
             text_color = (245, 245, 245)
             thickness = max(1, min(3, int(min(h, w) / 450)))
@@ -298,11 +346,10 @@ class SmartLabelerController:
 
             # Draw stored YOLO bbox on the original image.
             try:
-                bbox = json.loads(bbox_json) if isinstance(bbox_json, str) else bbox_json
-                print("bbox: ", bbox)
-                if not isinstance(bbox, list) or len(bbox) != 4:
-                    raise ValueError("Invalid bbox format")
-                x1, y1, x2, y2 = [int(v) for v in bbox]
+                parsed_bbox = self._parse_bbox(bbox_raw)
+                if parsed_bbox is None:
+                    continue
+                x1, y1, x2, y2 = parsed_bbox
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
 
@@ -320,8 +367,8 @@ class SmartLabelerController:
 
             cv2.rectangle(img, (x1, y1), (x2, y2), box_color, thickness)
 
-            source_tag = "[MANUAL]" if is_manual else "[SVM]"
-            label_text = f"{source_tag} {label.upper()}"
+            source_tag = "[MANUAL]" if bool(is_manual) else "[SVM]"
+            label_text = f"{source_tag} {str(label or 'Unknown').upper()}"
 
             (lbl_w, lbl_h), _ = cv2.getTextSize(label_text, font, font_scale, font_thickness)
             label_x = x1
@@ -351,7 +398,7 @@ class SmartLabelerController:
                 cv2.LINE_AA,
             )
 
-            cv2.imwrite(img_path, img)
+            cv2.imwrite(visualized_path, img)
 
         QMessageBox.information(None, "Sukces", f"Zapisano wizualizacje w:\n{target_dir}")
         print(f"[SUKCES] Folder '{target_dir}' został zaktualizowany o ramki.")
