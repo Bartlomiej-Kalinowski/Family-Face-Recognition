@@ -120,11 +120,12 @@ class SmartLabelerController:
 
         self.db._conn.commit()
 
-    def run_clustering_phase(self) -> None:
-        """Run DBSCAN clustering on unlabeled embeddings and collect human labels."""
+    def run_clustering_phase(self) -> dict:
+        """Run DBSCAN clustering and return whether training can continue."""
         unlabeled_data = self.db.get_all_unlabeled_embeddings()
         if not unlabeled_data:
-            return
+            print("[INFO] Brak nieoznaczonych embeddingów do klastrowania.")
+            return {"ready_for_training": False, "labeled_count": 0}
 
         fids = [item[0] for item in unlabeled_data]
         embeddings = np.array([item[1] for item in unlabeled_data])
@@ -140,15 +141,13 @@ class SmartLabelerController:
             self.process_bulk_selection(cluster_fids[:13])
 
         labeled_count = len(set(label for _, label, _ in self.db.get_labeled_data_for_train()))
-
-        if labeled_count >= 2:
-            print(f"Mamy {labeled_count} osoby. Uruchamiam SVM...")
-            self.run_classification_phase()
-        else:
+        ready_for_training = labeled_count >= 2
+        if not ready_for_training:
             print("Zbyt mało osób w bazie (wymagane min. 2), aby uruchomić SVM.")
+        return {"ready_for_training": ready_for_training, "labeled_count": labeled_count}
 
     def run_classification_phase(self):
-        """Train the SVM pipeline on manually labeled samples."""
+        """Train the SVM pipeline and return train samples for evaluation."""
         print("\n[SYSTEM] Rozpoczynanie fazy treningu...")
 
         self.db.mark_unlabeled_as_test()
@@ -156,17 +155,16 @@ class SmartLabelerController:
         train_data = self.db.get_labeled_data_for_train()
         if not train_data:
             print("[BŁĄD] Brak danych treningowych w bazie.")
-            return
+            return None
 
         unique_labels = set(label for _, label, _ in train_data)
         if len(unique_labels) < 2:
             print(f"[BŁĄD] Zbyt mało osób ({len(unique_labels)}). Potrzeba min. 2 do SVM.")
-            return
+            return None
 
         _, train_labels, train_embs = zip(*train_data)
         self.classifier.train_multiclass_svm(list(train_embs), list(train_labels))
-
-        self.run_evaluation_phase(train_data)
+        return train_data
 
     def run_evaluation_phase(self, train_data):
         """Run predictions for test data, log metrics, and refresh UI with results."""
@@ -174,14 +172,14 @@ class SmartLabelerController:
 
         if not test_data:
             print("[INFO] Brak nowych danych testowych do klasyfikacji.")
-            return
+            return False
 
         fids, paths, test_embs, _ = zip(*test_data)
 
         y_pred, confidences = self.classifier.predict_unlabeled(list(test_embs))
         if len(y_pred) == 0:
             print("[BŁĄD] Model nie zwrócił predykcji.")
-            return
+            return False
 
         y_true = [self.get_gt_from_path(path) for path in paths]
 
@@ -220,6 +218,20 @@ class SmartLabelerController:
             "Możesz teraz poprawić etykiety ręcznie w kafelkach.\n"
             "Gdy skończysz, kliknij przycisk 'Generuj wizualizacje'.",
         )
+        return True
+
+    def main_pipeline(self) -> None:
+        """Manage clustering -> classification -> evaluation using explicit returns."""
+        clustering_result = self.run_clustering_phase()
+        if not clustering_result["ready_for_training"]:
+            return
+
+        print(f"Mamy {clustering_result['labeled_count']} osoby. Uruchamiam SVM...")
+        train_data = self.run_classification_phase()
+        if not train_data:
+            return
+
+        self.run_evaluation_phase(train_data)
 
     def _on_generate_visualization_clicked(self) -> None:
         """Generate annotated images after optional manual corrections in the grid."""
@@ -238,11 +250,11 @@ class SmartLabelerController:
         mode = self.ui.ask_for_scan_mode()
 
         if mode == "use_existing":
-            self.rebuild_db_from_files()
-            self.run_clustering_phase()
+            self.db.rebuild_db_from_files()
+            self.main_pipeline()
         elif mode in ["full", "incremental"]:
-            self.run_initial_scan(mode=mode, limit=500)
-            self.run_clustering_phase()
+            self.run_initial_scan(mode=mode, limit=100000)
+            self.main_pipeline()
         elif mode == "cancel":
             return
 
@@ -258,20 +270,6 @@ class SmartLabelerController:
             return "_".join(parts[:-1])
         return name_part
 
-    def rebuild_db_from_files(self):
-        """Clear only label fields for existing rows, keeping all other metadata intact."""
-        print("Czyszczenie etykiet manualnych i SVM (bez naruszania pozostałych pól)...")
-        self.db._cursor.execute(
-            """
-            UPDATE faces
-            SET manual_label = NULL,
-                svm_prediction = NULL
-            WHERE manual_label IS NOT NULL OR svm_prediction IS NOT NULL
-            """
-        )
-        updated_rows = self.db._cursor.rowcount
-        self.db._conn.commit()
-        print(f"Wyczyszczono etykiety w {updated_rows} rekordach.")
 
     def _get_visualization_path(self, original_image_path: str, target_dir: str) -> str:
         """Build a collision-safe output path for an annotated source image."""

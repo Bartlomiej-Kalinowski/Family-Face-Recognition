@@ -215,3 +215,18 @@ class FaceDatabase:
         )
         self._conn.commit()
         return "updated"
+
+    def rebuild_db_from_files(self):
+        """Clear only label fields for existing rows, keeping all other metadata intact."""
+        print("Czyszczenie etykiet manualnych i SVM (bez naruszania pozostałych pól)...")
+        self._cursor.execute(
+            """
+            UPDATE faces
+            SET manual_label = NULL,
+                svm_prediction = NULL
+            WHERE manual_label IS NOT NULL OR svm_prediction IS NOT NULL
+            """
+        )
+        updated_rows = self._cursor.rowcount
+        self._conn.commit()
+        print(f"Wyczyszczono etykiety w {updated_rows} rekordach.")
