@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 
+
 class FaceDatabase:
     """Handle SQLite operations and file storage for extracted faces."""
 
@@ -39,6 +40,7 @@ class FaceDatabase:
                 embedding BLOB,
                 manual_label TEXT,
                 svm_prediction TEXT,
+                ground_truth_label TEXT,
                 is_test INTEGER DEFAULT 0
             )
             """
@@ -53,7 +55,7 @@ class FaceDatabase:
         self._cursor.execute("CREATE INDEX IF NOT EXISTS idx_image ON faces(image_path)")
         self._conn.commit()
 
-    def save_face(self, orig_image, face_img, face_id, original_path, bbox, embedding=None, is_test=0):
+    def save_face(self, orig_image, face_img, face_id, original_path, bbox, embedding=None, is_test=0, ground_truth = None):
         """Save a cropped face image and its metadata entry."""
         face_path = os.path.join(self.config.FACES_DIR, f"{face_id}.jpg")
 
@@ -67,10 +69,11 @@ class FaceDatabase:
         try:
             self._cursor.execute(
                 """
-                INSERT OR REPLACE INTO faces (original_image, face_id, image_path, bbox, manual_label, embedding, is_test)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO faces (original_image, face_id, image_path, bbox, manual_label, embedding,
+                is_test, ground_truth_label)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (orig_image, face_id, original_path, json.dumps(bbox), None, emb_json, is_test),
+                (orig_image, face_id, original_path, json.dumps(bbox), None, emb_json, is_test, ground_truth),
             )
         except Exception as e:
             print(f"[SQL ERROR] save_face: {e}")
@@ -101,7 +104,15 @@ class FaceDatabase:
     def get_all_unlabeled_embeddings(self) -> list:
         """Return unlabeled faces as `(face_id, embedding_np)` tuples."""
         self._cursor.execute(
-            "SELECT face_id, embedding FROM faces WHERE manual_label IS NULL AND embedding IS NOT NULL"
+            "SELECT face_id, embedding FROM faces WHERE ground_truth_label IS NULL AND embedding IS NOT NULL"
+        )
+        rows = self._cursor.fetchall()
+        return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb in rows]
+
+    def get_all_embeddings_without_ground_truth(self) -> list:
+        """Return unlabeled faces as `(face_id, embedding_np)` tuples."""
+        self._cursor.execute(
+            "SELECT face_id, embedding FROM faces WHERE ground_truth_label IS NULL AND embedding IS NOT NULL"
         )
         rows = self._cursor.fetchall()
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb in rows]
@@ -210,15 +221,22 @@ class FaceDatabase:
             return "collision"
 
         self._cursor.execute(
-            "UPDATE faces SET face_id = ?, image_path = ? WHERE face_id = ?",
-            (new_face_id, new_image_path, old_face_id),
+            "UPDATE faces SET face_id = ?, image_path = ? , ground_truth_label = ? WHERE face_id = ?",
+            (new_face_id, new_image_path, self.get_gt_from_path(new_image_path), old_face_id),
         )
+
+        print("Update bazy: UPDATE faces SET face_id = ?, image_path = ? , ground_truth_label = ? WHERE face_id = ?")
+        print(f"(new_face_id: {new_face_id},"
+              f"\n new_image_path: {new_image_path},"
+              f"\n self.get_gt_from_path(new_image_path): {self.get_gt_from_path(new_image_path)},"
+              f"\n old_face_id): {old_face_id}")
         self._conn.commit()
         return "updated"
 
+
     def rebuild_db_from_files(self):
         """Clear only label fields for existing rows, keeping all other metadata intact."""
-        print("Czyszczenie etykiet manualnych i SVM (bez naruszania pozostałych pól)...")
+        print("Clearing DB fields: manual_labels and svm_predictions...")
         self._cursor.execute(
             """
             UPDATE faces
@@ -229,4 +247,14 @@ class FaceDatabase:
         )
         updated_rows = self._cursor.rowcount
         self._conn.commit()
-        print(f"Wyczyszczono etykiety w {updated_rows} rekordach.")
+        print(f"Labels cleared in {updated_rows} records.")
+
+    @staticmethod
+    def get_gt_from_path(path):
+        """Extract expected label from filename convention `name_number.ext`."""
+        filename = os.path.basename(path)
+        name_part = os.path.splitext(filename)[0]
+        parts = name_part.split("_")
+        if len(parts) > 1 and parts[-1].isdigit():
+            return "_".join(parts[:-1])
+        return name_part

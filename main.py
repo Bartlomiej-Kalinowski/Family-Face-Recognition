@@ -1,11 +1,11 @@
 ﻿"""Application controller tying together UI, database, and ML workflows."""
 
 import hashlib
-import json
 import os
 import shutil
 import sys
 from datetime import datetime
+import json
 
 # Load torch/ultralytics early to avoid runtime initialization issues with Qt event loop.
 try:
@@ -19,7 +19,7 @@ except Exception:
 
 import cv2
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox # only for visualisation
 from sklearn.metrics import accuracy_score, classification_report, f1_score
 from tqdm import tqdm
 
@@ -108,7 +108,11 @@ class SmartLabelerController:
 
     def process_bulk_selection(self, face_ids: list) -> None:
         """Apply one confirmed label to a selected subset from a detected cluster."""
-        selected_fids, name = self.ui.bulk_verify_faces(face_ids)
+        #user can label only 70 % of faces in cluster (train/test - 70%/30%)
+        selected_fids, name = self.ui.bulk_verify_faces(face_ids[:int(0.6 * len(face_ids))])
+        print("Size od cluster: ", len(face_ids))
+        print("Size of train data in cluster: ", len(face_ids[:int(0.7 * len(face_ids))]))
+        print("Size of test data in cluster: ", len(face_ids) - len(face_ids[:int(0.7 * len(face_ids))]))
         if not selected_fids or not name:
             return
 
@@ -124,33 +128,38 @@ class SmartLabelerController:
         """Run DBSCAN clustering and return whether training can continue."""
         unlabeled_data = self.db.get_all_unlabeled_embeddings()
         if not unlabeled_data:
-            print("[INFO] Brak nieoznaczonych embeddingów do klastrowania.")
+            print("[INFO] No unlabeled embeddings in database for clustering!")
             return {"ready_for_training": False, "labeled_count": 0}
 
         fids = [item[0] for item in unlabeled_data]
         embeddings = np.array([item[1] for item in unlabeled_data])
 
-        clusters = self.classifier.get_face_clusters(embeddings, fids)
+        clusters = self.classifier.get_face_clusters(embeddings, fids) # dict of {"label1": [fid1, fid2, ...], ...}
+
+        # cid - cluster id - label
+        # cfids - list of fids
+        # valid clusters is clusters without too small clusters
         valid_clusters = {cid: cfids for cid, cfids in clusters.items() if len(cfids) >= 3}
 
-        print("Valid clusters number:\t", len(clusters))
-        print("Valid clusters number:\t", len(valid_clusters))
+        print("Number of all DBSCAN clusters:\t", len(clusters))
+        print("Valid clusters number (more than 3 faces per one cluster):\t", len(valid_clusters))
 
         for cluster_fids in valid_clusters.values():
-            # Limit cluster preview size so review dialogs remain usable.
-            self.process_bulk_selection(cluster_fids[:13])
+            print("Number of faces in cluster:\t", len(cluster_fids))
+            self.process_bulk_selection(cluster_fids)
 
+        # number of manual labels after DBSCAN
         labeled_count = len(set(label for _, label, _ in self.db.get_labeled_data_for_train()))
         ready_for_training = labeled_count >= 2
         if not ready_for_training:
-            print("Zbyt mało osób w bazie (wymagane min. 2), aby uruchomić SVM.")
+            print("Too less train different labels (min. 2 required), to start SVM prediction!")
         return {"ready_for_training": ready_for_training, "labeled_count": labeled_count}
 
     def run_classification_phase(self):
         """Train the SVM pipeline and return train samples for evaluation."""
-        print("\n[SYSTEM] Rozpoczynanie fazy treningu...")
+        print("\n[SYSTEM] Starting train phase...")
 
-        self.db.mark_unlabeled_as_test()
+        self.db.mark_unlabeled_as_test() # unlabeled data as test data
 
         train_data = self.db.get_labeled_data_for_train()
         if not train_data:
@@ -181,7 +190,7 @@ class SmartLabelerController:
             print("[BŁĄD] Model nie zwrócił predykcji.")
             return False
 
-        y_true = [self.get_gt_from_path(path) for path in paths]
+        y_true = [self.db.get_gt_from_path(path) for path in paths]
 
         acc = accuracy_score(y_true, y_pred)
         f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
@@ -220,17 +229,20 @@ class SmartLabelerController:
         )
         return True
 
-    def main_pipeline(self) -> None:
+    def app_pipeline(self) -> None:
         """Manage clustering -> classification -> evaluation using explicit returns."""
+        #-------------clustering and labeling by user------------------------
         clustering_result = self.run_clustering_phase()
         if not clustering_result["ready_for_training"]:
             return
+        print(f"Have {clustering_result['labeled_count']} people labeled by user. Starting SVM prediction...")
 
-        print(f"Mamy {clustering_result['labeled_count']} osoby. Uruchamiam SVM...")
+        #-------------classification-train phase------------------------------
         train_data = self.run_classification_phase()
         if not train_data:
             return
 
+        # ------------evaluation phase - test --------------------------------
         self.run_evaluation_phase(train_data)
 
     def _on_generate_visualization_clicked(self) -> None:
@@ -251,24 +263,16 @@ class SmartLabelerController:
 
         if mode == "use_existing":
             self.db.rebuild_db_from_files()
-            self.main_pipeline()
+            self.app_pipeline()
         elif mode in ["full", "incremental"]:
             self.run_initial_scan(mode=mode, limit=100000)
-            self.main_pipeline()
+            self.app_pipeline()
         elif mode == "cancel":
             return
 
         self.refresh_main_view()
         sys.exit(self.ui.app.exec_())
 
-    def get_gt_from_path(self, path):
-        """Extract expected label from filename convention `name_number.ext`."""
-        filename = os.path.basename(path)
-        name_part = os.path.splitext(filename)[0]
-        parts = name_part.split("_")
-        if len(parts) > 1 and parts[-1].isdigit():
-            return "_".join(parts[:-1])
-        return name_part
 
 
     def _get_visualization_path(self, original_image_path: str, target_dir: str) -> str:

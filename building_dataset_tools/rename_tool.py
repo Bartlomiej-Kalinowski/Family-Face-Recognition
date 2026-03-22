@@ -13,8 +13,9 @@ from database import FaceDatabase
 PROGRESS_FILE_NAME = ".label_progress.json"
 
 
+
 def _sanitize_label(label: str) -> str:
-    """Keep only filename-safe chars for generated names."""
+    """Keep filename-safe characters for generated face IDs."""
     return re.sub(r"[^A-Za-z0-9_-]+", "_", label.strip()).strip("_")
 
 
@@ -36,18 +37,18 @@ def _preview_image(path: str) -> bool:
 
 
 def _rename_file_and_sync_db(
-    db: FaceDatabase,
+    db1: FaceDatabase,
     old_path: str,
     new_path: str,
     old_face_id: str,
     new_face_id: str,
 ) -> None:
     """Rename file and try to sync `face_id` + `image_path` in DB."""
-    os.rename(old_path, new_path)
-    status = db.rename_face_record(old_face_id, new_face_id, os.path.abspath(new_path))
+    status = db1.rename_face_record(old_face_id, new_face_id, os.path.abspath(new_path))
 
     if status == "updated":
         print(f"  [+] Renamed: {os.path.basename(new_path)} (DB updated)")
+        os.rename(old_path, new_path)
         return
 
     if status == "missing_old":
