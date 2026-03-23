@@ -55,7 +55,8 @@ class FaceDatabase:
         self._cursor.execute("CREATE INDEX IF NOT EXISTS idx_image ON faces(image_path)")
         self._conn.commit()
 
-    def save_face(self, orig_image, face_img, face_id, original_path, bbox, embedding=None, is_test=0, ground_truth = None):
+    def save_face(self, orig_image, face_img, face_id, image_path, bbox, embedding=None, is_test=0, ground_truth = None
+                  , manual_label=None, svm_prediction=None):
         """Save a cropped face image and its metadata entry."""
         face_path = os.path.join(self.config.FACES_DIR, f"{face_id}.jpg")
 
@@ -69,12 +70,11 @@ class FaceDatabase:
         try:
             self._cursor.execute(
                 """
-                INSERT OR REPLACE INTO faces (original_image, face_id, image_path, bbox, manual_label, embedding,
-                is_test, ground_truth_label)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO faces (original_image, face_id, image_path, bbox, embedding,
+                manual_label, svm_prediction, ground_truth_label, is_test)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (orig_image, face_id, original_path, json.dumps(bbox), None, emb_json, is_test, ground_truth),
-            )
+                (orig_image, face_id, image_path, json.dumps(bbox), emb_json, manual_label, svm_prediction, ground_truth, is_test))
         except Exception as e:
             print(f"[SQL ERROR] save_face: {e}")
 
@@ -165,6 +165,11 @@ class FaceDatabase:
             """
         )
         return self._cursor.fetchall()
+
+    def exists_in_db(self, image_path: str) -> bool:
+        """Check if a face image path is already in the database."""
+        self._cursor.execute("SELECT 1 FROM faces WHERE image_path = ?", (image_path,))
+        return self._cursor.fetchone() is not None
 
     def clear_database(self) -> None:
         """Delete all face and processed-image records."""
@@ -258,3 +263,50 @@ class FaceDatabase:
         if len(parts) > 1 and parts[-1].isdigit():
             return "_".join(parts[:-1])
         return name_part
+
+    def recompute_all_embeddings(self, extractor_function) -> None:
+        """
+        Recalculates embeddings for all faces in the database using a new function.
+        This preserves manual labels and train/test splits.
+
+        :param extractor_function: A function that takes a face image (numpy array)
+                                   and returns a new embedding list/array.
+        """
+        print("[DB] Starting embedding recalculation...")
+
+        # Pobieramy wszystkie rekordy, które mają przypisane wycięte zdjęcie
+        self._cursor.execute("SELECT face_id, image_path FROM faces")
+        rows = self._cursor.fetchall()
+
+        updated_count = 0
+        error_count = 0
+
+        for face_id, face_image_path in rows:
+            # Wczytujemy wyciętą twarz z dysku
+            img = cv2.imread(face_image_path)
+
+            if img is None:
+                print(f"[DB ERROR] Could not read image for face {face_id} at {face_image_path}")
+                error_count += 1
+                continue
+
+            try:
+                # Tutaj wywołujemy zaktualizowaną funkcję z ml_engine.py
+                new_embedding = extractor_function(img)
+
+                if new_embedding is not None:
+                    emb_json = json.dumps(
+                        new_embedding.tolist() if isinstance(new_embedding, np.ndarray) else new_embedding)
+
+                    # Aktualizujemy TYLKO embedding
+                    self._cursor.execute(
+                        "UPDATE faces SET embedding = ? WHERE face_id = ?",
+                        (emb_json, face_id)
+                    )
+                    updated_count += 1
+            except Exception as e:
+                print(f"[DB ERROR] Failed to compute/save new embedding for {face_id}: {e}")
+                error_count += 1
+
+        self._conn.commit()
+        print(f"[DB] Recalculation complete. Updated: {updated_count}, Errors: {error_count}")

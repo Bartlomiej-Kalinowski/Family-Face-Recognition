@@ -9,16 +9,38 @@ from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
-from ultralytics import YOLO
+
 
 
 class FaceExtractor:
     """Detect faces with YOLO and compute HOG embeddings for each crop."""
 
     def __init__(self, config):
+        from ultralytics import YOLO
         """Load the YOLO detector using paths from the config object."""
         self.config = config
         self.detector = YOLO(config.YOLO_MODEL_PATH)
+
+    @staticmethod
+    def compute_embedding_from_crop( face_crop: np.ndarray) -> np.ndarray:
+        """Oblicza NOWY embedding HOG dla wyciętej twarzy."""
+        if face_crop.size == 0:
+            return None
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        hog = cv2.HOGDescriptor((64, 64), (16, 16), (8, 8), (8, 8), 9)
+
+        gray = cv2.cvtColor(
+            cv2.resize(face_crop, (64, 64), interpolation=cv2.INTER_AREA),
+            cv2.COLOR_BGR2GRAY,
+        )
+        gray = clahe.apply(gray)
+
+        embedding = np.array(hog.compute(gray)).flatten().astype(np.float32)
+        # Normalizacja L2
+        embedding = embedding / (np.linalg.norm(embedding) + 1e-6)
+
+        return embedding
 
     def extract_face_data(self, image_path: str) -> list:
         """Return detected faces as dictionaries with crop, bbox, and embedding."""
@@ -38,35 +60,23 @@ class FaceExtractor:
 
             # Add context around the face to make embeddings less brittle.
             w_box, h_box = x2 - x1, y2 - y1
-            pad = 0.2
+            pad = 0.0
             x1, y1 = max(0, int(x1 - w_box * pad)), max(0, int(y1 - h_box * pad))
             x2, y2 = min(img_w, int(x2 + w_box * pad)), min(img_h, int(y2 + h_box * pad))
 
             face_crop = img[y1:y2, x1:x2]
-            if face_crop.size == 0:
-                continue
 
-            display_crop = cv2.resize(face_crop, (160, 160), interpolation=cv2.INTER_LANCZOS4)
-            gray = cv2.cvtColor(
-                cv2.resize(face_crop, (64, 64), interpolation=cv2.INTER_AREA),
-                cv2.COLOR_BGR2GRAY,
-            )
-            gray = clahe.apply(gray)
+            # Zamiast pisać logikę HOG tutaj, wywołaj nową metodę:
+            embedding = self.compute_embedding_from_crop(face_crop)
 
-            embedding = np.array(hog.compute(gray)).flatten().astype(np.float32)
-            embedding = embedding / (np.linalg.norm(embedding) + 1e-6)
-
-            faces_data.append(
-                {
+            if embedding is not None:
+                faces_data.append({
                     "original_image": image_path,
-                    "crop": display_crop,
+                    "crop": face_crop,
                     "bbox": [int(x1), int(y1), int(x2), int(y2)],
                     "embedding": embedding.tolist(),
-                }
-            )
-
+                })
         return faces_data
-
 
 class FaceClassifier:
     """Cluster unlabeled faces and run multi-class SVM classification."""
@@ -83,6 +93,8 @@ class FaceClassifier:
 
         clusters = {}
         for fid, label in zip(fids, labels):
+            if label == -1:  # noise
+                continue
             if label not in clusters:
                 clusters[label] = []
             clusters[label].append(fid)
@@ -95,7 +107,6 @@ class FaceClassifier:
 
         pipe = Pipeline(
             [
-                ("scaler", StandardScaler()),
                 ("pca", PCA(n_components=0.90)),
                 ("clf", OneVsRestClassifier(SVC(kernel="rbf", probability=True, class_weight="balanced"))),
             ]

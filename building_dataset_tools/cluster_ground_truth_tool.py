@@ -14,6 +14,8 @@ from database import FaceDatabase
 from interface import FaceInterface
 from rename_tool import _rename_file_and_sync_db
 
+from ml_engine import FaceExtractor
+
 
 
 class GroundTruthClusterTool:
@@ -87,7 +89,9 @@ class GroundTruthClusterTool:
             return []
 
         embeddings = np.array([emb_map[fid] for fid in pending_ids], dtype=np.float32)
-        labels = DBSCAN(eps=0.47, min_samples=3, metric="euclidean").fit_predict(embeddings)
+        labels = DBSCAN(eps=0.15, min_samples=2, metric="cosine").fit_predict(embeddings)
+
+
         raw: dict[int, list[str]] = {}
         for fid, label in zip(pending_ids, labels):
             raw.setdefault(int(label), []).append(fid)
@@ -193,8 +197,11 @@ class GroundTruthClusterTool:
 
 
 if __name__ == "__main__":
-
     tool = GroundTruthClusterTool()
+    is_changed_embds = int(input("recompute embds?(0/1): 0 - no, 1 - yes:\t"))
+    if is_changed_embds == 1:
+        tool.db.recompute_all_embeddings(FaceExtractor.compute_embedding_from_crop)
+        tool.db.close()
     try:
         tool.run()
     finally:

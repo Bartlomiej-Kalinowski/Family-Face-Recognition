@@ -52,13 +52,13 @@ class SmartLabelerController:
         labeled_faces = self.db.get_all_labeled_faces()
         self.ui.refresh_classified_faces(labeled_faces, self._manual_fix_callback)
 
-    def run_initial_scan(self, mode: str = "incremental", limit: int = 1000, callback=None) -> None:
+    def run_initial_scan(self, mode: str, limit: int = 100000, callback=None) -> None:
         """Scan source images, extract faces, and store face crops with embeddings."""
         if mode == "full":
             self.db.clear_database()
-            if os.path.exists(self.config.FACES_DIR):
-                for f_name in os.listdir(self.config.FACES_DIR):
-                    os.remove(os.path.join(self.config.FACES_DIR, f_name))
+            print("Clearing database...")
+            for crop in os.listdir(self.config.FACES_DIR):
+                os.remove(os.path.join(self.config.FACES_DIR, crop))
 
         all_paths = [
             os.path.normpath(os.path.abspath(os.path.join(root, f_name)))
@@ -91,7 +91,6 @@ class SmartLabelerController:
                     fid = f"{safe_name}_f{j}"
                     clean_emb = np.array(face["embedding"]).flatten().astype(np.float32).tolist()
                     self.db.save_face(face["original_image"],face["crop"], fid, full_path, face["bbox"], clean_emb)
-
                 self.db.mark_as_processed(full_path)
                 self.db._conn.commit()
 
