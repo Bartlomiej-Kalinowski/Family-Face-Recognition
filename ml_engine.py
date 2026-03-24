@@ -88,7 +88,7 @@ class FaceClassifier:
 
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
         """Group unlabeled embeddings using DBSCAN with cosine distance."""
-        dbscan = DBSCAN(eps=0.1, min_samples=3, metric="cosine")
+        dbscan = DBSCAN(eps=0.125, min_samples=2, metric="cosine")
         labels = dbscan.fit_predict(embeddings)
 
         clusters = {}

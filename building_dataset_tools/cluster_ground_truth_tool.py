@@ -89,7 +89,7 @@ class GroundTruthClusterTool:
             return []
 
         embeddings = np.array([emb_map[fid] for fid in pending_ids], dtype=np.float32)
-        labels = DBSCAN(eps=0.15, min_samples=2, metric="cosine").fit_predict(embeddings)
+        labels = DBSCAN(eps=0.25, min_samples=2, metric="cosine").fit_predict(embeddings)
 
 
         raw: dict[int, list[str]] = {}

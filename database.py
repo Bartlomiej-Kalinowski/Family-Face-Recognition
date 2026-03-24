@@ -104,7 +104,7 @@ class FaceDatabase:
     def get_all_unlabeled_embeddings(self) -> list:
         """Return unlabeled faces as `(face_id, embedding_np)` tuples."""
         self._cursor.execute(
-            "SELECT face_id, embedding FROM faces WHERE ground_truth_label IS NULL AND embedding IS NOT NULL"
+            "SELECT face_id, embedding FROM faces WHERE manual_label IS NULL AND embedding IS NOT NULL AND ground_truth_label != 'None' "
         )
         rows = self._cursor.fetchall()
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb in rows]
@@ -125,6 +125,7 @@ class FaceDatabase:
             FROM faces
             WHERE manual_label IS NULL
             AND embedding IS NOT NULL
+            AND ground_truth_label != 'None'
             AND is_test = 1
             """
         )
@@ -145,7 +146,7 @@ class FaceDatabase:
         self._cursor.execute(
             """
             SELECT face_id, manual_label, embedding FROM faces
-            WHERE manual_label IS NOT NULL AND is_test = 0
+            WHERE manual_label IS NOT NULL AND is_test = 0 AND ground_truth_label != 'None'
             """
         )
         rows = self._cursor.fetchall()

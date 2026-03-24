@@ -108,7 +108,7 @@ class SmartLabelerController:
     def process_bulk_selection(self, face_ids: list) -> None:
         """Apply one confirmed label to a selected subset from a detected cluster."""
         #user can label only 70 % of faces in cluster (train/test - 70%/30%)
-        selected_fids, name = self.ui.bulk_verify_faces(face_ids[:int(0.6 * len(face_ids))])
+        selected_fids, name = self.ui.bulk_verify_faces(face_ids[:60])
         print("Size od cluster: ", len(face_ids))
         print("Size of train data in cluster: ", len(face_ids[:int(0.7 * len(face_ids))]))
         print("Size of test data in cluster: ", len(face_ids) - len(face_ids[:int(0.7 * len(face_ids))]))
@@ -126,6 +126,7 @@ class SmartLabelerController:
     def run_clustering_phase(self) -> dict:
         """Run DBSCAN clustering and return whether training can continue."""
         unlabeled_data = self.db.get_all_unlabeled_embeddings()
+        print("Number of unlabeled faces in database -- test:\t", len(unlabeled_data))
         if not unlabeled_data:
             print("[INFO] No unlabeled embeddings in database for clustering!")
             return {"ready_for_training": False, "labeled_count": 0}
@@ -263,7 +264,13 @@ class SmartLabelerController:
         if mode == "use_existing":
             self.db.rebuild_db_from_files()
             self.app_pipeline()
-        elif mode in ["full", "incremental"]:
+        elif mode == "full":
+            for img in os.listdir(self.config.ANNOTATED_FACES_DIR):
+                os.remove(os.path.join(self.config.ANNOTATED_FACES_DIR, img))
+
+            self.run_initial_scan(mode=mode, limit=100000)
+            self.app_pipeline()
+        elif mode == "incremental":
             self.run_initial_scan(mode=mode, limit=100000)
             self.app_pipeline()
         elif mode == "cancel":
