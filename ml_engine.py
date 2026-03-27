@@ -7,7 +7,6 @@ from sklearn.decomposition import PCA
 from sklearn.model_selection import GridSearchCV
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
 
@@ -88,7 +87,12 @@ class FaceClassifier:
 
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
         """Group unlabeled embeddings using DBSCAN with cosine distance."""
-        dbscan = DBSCAN(eps=0.125, min_samples=2, metric="cosine")
+
+        dbscan = DBSCAN(eps=0.31, min_samples=5, metric="cosine")
+        pca = PCA(n_components=0.6)
+
+        embeddings = pca.fit_transform(embeddings)
+
         labels = dbscan.fit_predict(embeddings)
 
         clusters = {}
@@ -100,14 +104,14 @@ class FaceClassifier:
             clusters[label].append(fid)
         return clusters
 
-    def train_multiclass_svm(self, x_train: list, y_train_labels: list) -> None:
+    def train_one_vs_rest_svm(self, x_train: list, y_train_labels: list) -> None:
         """Train an One-vs-Rest SVM pipeline with grid search."""
         if len(set(y_train_labels)) < 2:
             return
 
         pipe = Pipeline(
             [
-                ("pca", PCA(n_components=0.90)),
+                ("pca", PCA(n_components=0.7)),
                 ("clf", OneVsRestClassifier(SVC(kernel="rbf", probability=True, class_weight="balanced"))),
             ]
         )

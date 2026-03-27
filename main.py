@@ -172,7 +172,7 @@ class SmartLabelerController:
             return None
 
         _, train_labels, train_embs = zip(*train_data)
-        self.classifier.train_multiclass_svm(list(train_embs), list(train_labels))
+        self.classifier.train_one_vs_rest_svm(list(train_embs), list(train_labels))
         return train_data
 
     def run_evaluation_phase(self, train_data):
