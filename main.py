@@ -7,6 +7,7 @@ import sys
 from datetime import datetime
 import json
 
+
 # Load torch/ultralytics early to avoid runtime initialization issues with Qt event loop.
 try:
     from ultralytics import YOLO
@@ -105,27 +106,36 @@ class SmartLabelerController:
 
         print(f"Skanowanie zakończone. Wycięto i zapisano {total_faces} twarzy.")
 
-    def process_bulk_selection(self, face_ids: list) -> None:
-        """Apply one confirmed label to a selected subset from a detected cluster."""
-        #user can label only 70 % of faces in cluster (train/test - 70%/30%)
-        selected_fids, name = self.ui.bulk_verify_faces(face_ids[:60])
-        print("Size od cluster: ", len(face_ids))
-        print("Size of train data in cluster: ", len(face_ids[:int(0.7 * len(face_ids))]))
-        print("Size of test data in cluster: ", len(face_ids) - len(face_ids[:int(0.7 * len(face_ids))]))
+    def process_bulk_selection(self, id_path_pairs: dict) -> None:
+        """id_path_pairs to lista [(fid1, path1), (fid2, path2), ...]"""
+        if not id_path_pairs:
+            return
+
+        # Przekazujemy do UI pary (ID, ścieżka), żeby okno mogło wyświetlić miniatury
+        selected_fids, name = self.ui.bulk_verify_faces(id_path_pairs)
+
         if not selected_fids or not name:
             return
 
         total = len(selected_fids)
         for i, fid in enumerate(selected_fids):
+            # Zapisujemy w bazie
             self.db.set_manual_label(fid, name, is_test=0)
-            self.ui.update_progress(i + 1, total, f"Zapisywanie: {name}")
-            QApplication.processEvents()
+
+            if i % 10 == 0:  # Optymalizacja odświeżania paska postępu
+                self.ui.update_progress(i + 1, total, f"Zapisywanie: {name}")
+                QApplication.processEvents()
 
         self.db._conn.commit()
+        self.refresh_main_view()
+
+    def preprocessing_phase(self):
+        self.extractor.compute_embedding_from_crop()
+
 
     def run_clustering_phase(self) -> dict:
         """Run DBSCAN clustering and return whether training can continue."""
-        unlabeled_data = self.db.get_all_unlabeled_embeddings()
+        unlabeled_data = self.db.get_all_embeddings_without_ground_truth()
         print("Number of unlabeled faces in database -- test:\t", len(unlabeled_data))
         if not unlabeled_data:
             print("[INFO] No unlabeled embeddings in database for clustering!")
@@ -146,7 +156,12 @@ class SmartLabelerController:
 
         for cluster_fids in valid_clusters.values():
             print("Number of faces in cluster:\t", len(cluster_fids))
-            self.process_bulk_selection(cluster_fids)
+
+            # Pobieramy ścieżki do zdjęć dla tego klastra, żeby GUI mogło je wyświetlić
+            cluster_fids_and_paths = self.db.get_paths_for_fids(cluster_fids)
+
+            # Przekazujemy pary do funkcji bulk
+            self.process_bulk_selection(cluster_fids_and_paths)
 
         # number of manual labels after DBSCAN
         labeled_count = len(set(label for _, label, _ in self.db.get_labeled_data_for_train()))
@@ -232,6 +247,9 @@ class SmartLabelerController:
     def app_pipeline(self) -> None:
         """Manage clustering -> classification -> evaluation using explicit returns."""
         #-------------clustering and labeling by user------------------------
+        is_preprocessing = int(input("Do you want to recompute_embds(0 - no, 1 - yes):\t"))
+        if is_preprocessing:
+            self.preprocessing_phase()
         clustering_result = self.run_clustering_phase()
         if not clustering_result["ready_for_training"]:
             return

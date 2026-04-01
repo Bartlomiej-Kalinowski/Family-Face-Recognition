@@ -6,6 +6,7 @@ import sqlite3
 
 import cv2
 import numpy as np
+from tqdm import tqdm
 
 
 
@@ -101,18 +102,21 @@ class FaceDatabase:
         self._cursor.execute("SELECT path FROM processed_images")
         return [row[0] for row in self._cursor.fetchall()]
 
-    def get_all_unlabeled_embeddings(self) -> list:
-        """Return unlabeled faces as `(face_id, embedding_np)` tuples."""
+    def get_all_unlabeled_embeddings(self):
         self._cursor.execute(
-            "SELECT face_id, embedding FROM faces WHERE manual_label IS NULL AND embedding IS NOT NULL AND ground_truth_label != 'None' "
+            "SELECT face_id, embedding FROM faces WHERE manual_label IS NULL AND embedding IS NOT NULL AND ground_truth_label != 'None'"
         )
-        rows = self._cursor.fetchall()
-        return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb in rows]
+        while True:
+            rows = self._cursor.fetchmany(1000)
+            if not rows:
+                break
+            for fid, emb in rows:
+                yield fid, np.array(json.loads(emb)).astype(np.float32)
 
     def get_all_embeddings_without_ground_truth(self) -> list:
         """Return unlabeled faces as `(face_id, embedding_np)` tuples."""
         self._cursor.execute(
-            "SELECT face_id, embedding FROM faces WHERE ground_truth_label IS NULL AND embedding IS NOT NULL"
+            "SELECT face_id, embedding FROM faces WHERE ground_truth_label != 'None' AND embedding IS NOT NULL"
         )
         rows = self._cursor.fetchall()
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb in rows]
@@ -255,6 +259,7 @@ class FaceDatabase:
         self._conn.commit()
         print(f"Labels cleared in {updated_rows} records.")
 
+
     @staticmethod
     def get_gt_from_path(path):
         """Extract expected label from filename convention `name_number.ext`."""
@@ -265,49 +270,43 @@ class FaceDatabase:
             return "_".join(parts[:-1])
         return name_part
 
-    def recompute_all_embeddings(self, extractor_function) -> None:
-        """
-        Recalculates embeddings for all faces in the database using a new function.
-        This preserves manual labels and train/test splits.
+    def embedding_generator(self):
+        read_cursor = self._conn.cursor()
+        read_cursor.execute(
+            "SELECT face_id, image_path, embedding FROM faces WHERE ground_truth_label != 'None' "
+        )
+        while True:
+            row = read_cursor.fetchone()
+            if row is None:
+                break
+            face_id, image_path, emb_json = row
+            if emb_json:
+                emb = np.array(json.loads(emb_json), dtype=np.float32)
+                yield face_id, image_path, emb
 
-        :param extractor_function: A function that takes a face image (numpy array)
-                                   and returns a new embedding list/array.
-        """
-        print("[DB] Starting embedding recalculation...")
 
-        # Pobieramy wszystkie rekordy, które mają przypisane wycięte zdjęcie
-        self._cursor.execute("SELECT face_id, image_path FROM faces")
-        rows = self._cursor.fetchall()
+    def update_emd(self, face_emb, face_id):
+        try:
+            if face_emb is not None:
+                # Zamiana z powrotem na listę i JSON
+                emb_list = face_emb.tolist() if isinstance(face_emb, np.ndarray) else face_emb
+                emb_json = json.dumps(emb_list)
 
-        updated_count = 0
-        error_count = 0
-
-        for face_id, face_image_path in rows:
-            # Wczytujemy wyciętą twarz z dysku
-            img = cv2.imread(face_image_path)
-
-            if img is None:
-                print(f"[DB ERROR] Could not read image for face {face_id} at {face_image_path}")
-                error_count += 1
-                continue
-
-            try:
-                # Tutaj wywołujemy zaktualizowaną funkcję z ml_engine.py
-                new_embedding = extractor_function(img)
-
-                if new_embedding is not None:
-                    emb_json = json.dumps(
-                        new_embedding.tolist() if isinstance(new_embedding, np.ndarray) else new_embedding)
-
-                    # Aktualizujemy TYLKO embedding
-                    self._cursor.execute(
-                        "UPDATE faces SET embedding = ? WHERE face_id = ?",
-                        (emb_json, face_id)
-                    )
-                    updated_count += 1
-            except Exception as e:
-                print(f"[DB ERROR] Failed to compute/save new embedding for {face_id}: {e}")
-                error_count += 1
-
+                self._cursor.execute(
+                    "UPDATE faces SET embedding = ? WHERE face_id = ?",
+                    (emb_json, face_id)
+                )
+        except Exception as e:
+            print(f"[DB ERROR] Failed to compute/save new embedding for {face_id}: {e}")
+            return False
         self._conn.commit()
-        print(f"[DB] Recalculation complete. Updated: {updated_count}, Errors: {error_count}")
+        return True
+
+    def get_paths_for_fids(self, fids: list) -> dict:
+        """Zwraca listę ścieżek do cropów dla podanych face_ids."""
+        fids_and_paths = {}
+        for fid in fids:
+            self._cursor.execute("SELECT image_path FROM faces WHERE face_id = ?", (fid,))
+            path = self._cursor.fetchone()[0]
+            fids_and_paths[fid] = path
+        return fids_and_paths

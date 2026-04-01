@@ -232,12 +232,12 @@ class FaceInterface(QMainWindow):
         self.btn_generate_visualization.setVisible(True)
         self.btn_generate_visualization.setEnabled(enabled)
 
-    def bulk_verify_faces(self, face_ids):
+    def bulk_verify_faces(self, face_id_path_pairs: dict):
         """Open a dialog to assign one label to a selected cluster."""
         self.final_selection = []
         self.bulk_name = ""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Wykryto nową grupę (DBSCAN / Mean Shift)")
+        dialog.setWindowTitle("Wykryto nową grupę (DBSCAN)")
         dialog.setMinimumSize(900, 700)
         dialog_layout = QVBoxLayout(dialog)
 
@@ -260,8 +260,9 @@ class FaceInterface(QMainWindow):
         inner_grid = QGridLayout(grid_widget)
 
         check_boxes = {}
-        for i, fid in enumerate(face_ids):
-            face_path = os.path.join(Config.FACES_DIR, f"{fid}.jpg")
+        for i, fid_and_path in enumerate(face_id_path_pairs.items()):
+            fid = fid_and_path[0]
+            face_path = fid_and_path[1]
             container = QVBoxLayout()
             img_label = QLabel()
             pixmap = QPixmap(face_path)

@@ -3,11 +3,15 @@
 import cv2
 import numpy as np
 from sklearn.cluster import DBSCAN
-from sklearn.decomposition import PCA
 from sklearn.model_selection import GridSearchCV
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
+from sklearn.preprocessing import Normalizer
+from tqdm import tqdm
+from sklearn.decomposition import PCA, IncrementalPCA
+
+from database import FaceDatabase
 
 
 
@@ -19,27 +23,83 @@ class FaceExtractor:
         """Load the YOLO detector using paths from the config object."""
         self.config = config
         self.detector = YOLO(config.YOLO_MODEL_PATH)
+        self.db = FaceDatabase(self.config)
 
     @staticmethod
-    def compute_embedding_from_crop( face_crop: np.ndarray) -> np.ndarray:
-        """Oblicza NOWY embedding HOG dla wyciętej twarzy."""
-        if face_crop.size == 0:
-            return None
+    def recompute_one_embedding(face_image_path):
+        # Wczytujemy fizyczny plik obrazu z dysku
+        img = cv2.imread(face_image_path)
 
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = cv2.cvtColor(cv2.resize(img, (64, 64)), cv2.COLOR_BGR2GRAY)
+        img = clahe.apply(gray)
+
         hog = cv2.HOGDescriptor((64, 64), (16, 16), (8, 8), (8, 8), 9)
+        img = hog.compute(img).flatten().astype(np.float32)
+        return img
 
-        gray = cv2.cvtColor(
-            cv2.resize(face_crop, (64, 64), interpolation=cv2.INTER_AREA),
-            cv2.COLOR_BGR2GRAY,
-        )
-        gray = clahe.apply(gray)
+    def compute_embedding_from_crop(self):
+        pca = IncrementalPCA(n_components=50)
+        scaler = Normalizer(norm='l2')
 
-        embedding = np.array(hog.compute(gray)).flatten().astype(np.float32)
-        # Normalizacja L2
-        embedding = embedding / (np.linalg.norm(embedding) + 1e-6)
+        print("--- Preprocessing, part I: Fitting PCA ---")
+        batch_size = 100
+        batch_embs = []
 
-        return embedding
+        updated_correctly = 0
+        update_errors = 0
+        nb_features = None
+        # 1. Trenowanie PCA paczkami (partial_fit)
+        for face_id, img_path, face_emb in tqdm(self.db.embedding_generator(), "Fitting PCA"):
+            face_emb = self.recompute_one_embedding(img_path)
+            nb_features = face_emb.shape
+            success = self.db.update_emd(face_emb, face_id)
+            if success:
+                updated_correctly += 1
+            else:
+                update_errors += 1
+            batch_embs.append(face_emb)
+
+            # Jeśli paczka ma 100 elementów, uczymy model i czyścimy paczkę
+            if len(batch_embs) == batch_size:
+                pca.partial_fit(np.array(batch_embs))
+                batch_embs.clear()
+
+        # Dobicie resztki danych, które nie wypełniły pełnej setki
+        if len(batch_embs) > 0:
+            pca.partial_fit(np.array(batch_embs))
+
+        print("--- Preprocessing, part I: Transforming & Normalizing ---")
+        print(f"Updated correctly, part I: {updated_correctly}")
+        print(f"Errors, part I: {update_errors}")
+        print("Emb shape part I: ", nb_features)
+        updated_correctly = 0
+        update_errors = 0
+        nb_features = None
+
+        # 2. Transformacja i normalizacja każdego embeddingu
+        for face_id, _, face_emb in tqdm(self.db.embedding_generator(), "Transforming"):
+            # PCA wymaga danych w formacie 2D, więc robimy reshape(1, -1)
+            reduced = pca.transform(face_emb.reshape(1, -1))
+
+            # Skalowanie L2 i powrót do 1D za pomocą flatten()
+            final_emb = scaler.transform(reduced).flatten()
+            nb_features = final_emb.shape
+
+            # Aktualizacja w bazie - zwraca True/False
+            success = self.db.update_emd(final_emb, face_id)
+            if success:
+                updated_correctly += 1
+            else:
+                update_errors += 1
+
+        self.db._conn.commit()
+
+        print("\n[DB] Recalculation complete.")
+        print(f"Updated correctly, part II: {updated_correctly}")
+        print(f"Errors, part II: {update_errors}")
+        print("Emb shape part II: ", nb_features)
+
 
     def extract_face_data(self, image_path: str) -> list:
         """Return detected faces as dictionaries with crop, bbox, and embedding."""
@@ -51,8 +111,6 @@ class FaceExtractor:
         faces_data = []
         img_h, img_w, _ = img.shape
 
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        hog = cv2.HOGDescriptor((64, 64), (16, 16), (8, 8), (8, 8), 9)
 
         for box in results.boxes:
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
@@ -63,19 +121,38 @@ class FaceExtractor:
             x1, y1 = max(0, int(x1 - w_box * pad)), max(0, int(y1 - h_box * pad))
             x2, y2 = min(img_w, int(x2 + w_box * pad)), min(img_h, int(y2 + h_box * pad))
 
-            face_crop = img[y1:y2, x1:x2]
+            base_embedding = img[y1:y2, x1:x2]
 
-            # Zamiast pisać logikę HOG tutaj, wywołaj nową metodę:
-            embedding = self.compute_embedding_from_crop(face_crop)
-
-            if embedding is not None:
+            if base_embedding is not None:
                 faces_data.append({
                     "original_image": image_path,
-                    "crop": face_crop,
+                    "crop": base_embedding,
                     "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                    "embedding": embedding.tolist(),
+                    "embedding": base_embedding.tolist(),
                 })
         return faces_data
+
+class FaceClusterer:
+    def __init__(self):
+        self.X_normalized = None
+
+    def get_data(self):
+        self.X_normalized = self.db.get_all_embeddings_without_ground_truth
+
+    def check_data_density(self):
+        from sklearn.neighbors import NearestNeighbors
+        import matplotlib.pyplot as plt
+
+        # n_neighbors powinno odpowiadać parametrowi min_samples w DBSCAN (zazwyczaj 5)
+        neigh = NearestNeighbors(n_neighbors=5)
+        nbrs = neigh.fit(self.X_normalized)
+        distances, indices = nbrs.kneighbors(self.X_normalized)
+
+        distances = np.sort(distances[:, 4], axis=0)
+        plt.plot(distances)
+        plt.title("Wykres k-distance")
+        plt.ylabel("Odległość do 5-tego sąsiada (Eps)")
+        plt.show()
 
 class FaceClassifier:
     """Cluster unlabeled faces and run multi-class SVM classification."""
@@ -88,7 +165,7 @@ class FaceClassifier:
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
         """Group unlabeled embeddings using DBSCAN with cosine distance."""
 
-        dbscan = DBSCAN(eps=0.31, min_samples=5, metric="cosine")
+        dbscan = DBSCAN(eps=0.13, min_samples=5, metric="cosine")
         pca = PCA(n_components=0.6)
 
         embeddings = pca.fit_transform(embeddings)
