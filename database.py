@@ -126,10 +126,11 @@ class FaceDatabase:
         """Return unlabeled faces as `(face_id, embedding_np)` tuples."""
         self._cursor.execute(
             """SELECT face_id, embedding FROM faces WHERE ground_truth_label != 'None' 
-            AND embedding IS NOT NULL AND dataset_id = ?""",
+            AND embedding IS NOT NULL AND dataset_id = ? """,
             (dataset,)
         )
         rows = self._cursor.fetchall()
+        print(len(rows[0][1]))
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb in rows]
 
     def get_unlabeled_test_data(self, dataset: int = 1) -> list:

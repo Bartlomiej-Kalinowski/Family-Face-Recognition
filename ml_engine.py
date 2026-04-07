@@ -39,13 +39,12 @@ class FaceExtractor:
         return img
 
     def compute_embedding_from_crop(self):
-        pca = IncrementalPCA(n_components=50)
+        pca = IncrementalPCA(n_components=150)
         scaler = Normalizer(norm='l2')
 
         print("--- Preprocessing, part I: Fitting PCA ---")
-        batch_size = 100
+        batch_size = 150
         batch_embs = []
-
         updated_correctly = 0
         update_errors = 0
         nb_features = None
@@ -60,7 +59,7 @@ class FaceExtractor:
                 update_errors += 1
             batch_embs.append(face_emb)
 
-            # Jeśli paczka ma 100 elementów, uczymy model i czyścimy paczkę
+            # Jeśli paczka ma 150 elementów, uczymy model i czyścimy paczkę
             if len(batch_embs) == batch_size:
                 pca.partial_fit(np.array(batch_embs))
                 batch_embs.clear()
@@ -165,10 +164,7 @@ class FaceClassifier:
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
         """Group unlabeled embeddings using DBSCAN with cosine distance."""
 
-        dbscan = DBSCAN(eps=0.13, min_samples=5, metric="cosine")
-        pca = PCA(n_components=0.6)
-
-        embeddings = pca.fit_transform(embeddings)
+        dbscan = DBSCAN(eps=0.35, min_samples=2, metric="cosine")
 
         labels = dbscan.fit_predict(embeddings)
 
@@ -186,19 +182,42 @@ class FaceClassifier:
         if len(set(y_train_labels)) < 2:
             return
 
-        pipe = Pipeline(
-            [
-                ("pca", PCA(n_components=0.7)),
-                ("clf", OneVsRestClassifier(SVC(kernel="rbf", probability=True, class_weight="balanced"))),
-            ]
-        )
+        # pipe = Pipeline(
+        #     [
+        #         ("pca", PCA(n_components=150)),
+        #         ("clf", OneVsRestClassifier(SVC(kernel="rbf", probability=True, class_weight="balanced"), n_jobs = -1)),
+        #     ]
+        # )
+
+        # param_grid = {
+        #     "clf__estimator__C": [0.1, 1, 10, 100],
+        #     "clf__estimator__gamma": [0.001, 0.01, 0.1, "scale"],
+        # }
+
+        # search = GridSearchCV(pipe, param_grid, cv=3, n_jobs=-1)
+
+        from scipy.stats import loguniform
+        from sklearn.model_selection import RandomizedSearchCV
+        pipe = Pipeline([
+            ("pca", PCA(n_components=0.7)),
+            ("clf", OneVsRestClassifier(
+                SVC(kernel="rbf", probability=True, class_weight="balanced"),
+                n_jobs=-1
+            )),
+        ])
 
         param_grid = {
-            "clf__estimator__C": [0.1, 1, 10, 100],
-            "clf__estimator__gamma": [0.001, 0.01, 0.1, "scale"],
+            "clf__estimator__C": loguniform(1e3, 1e5),
+            "clf__estimator__gamma": loguniform(1e-4, 1e-1),
         }
 
-        search = GridSearchCV(pipe, param_grid, cv=3, n_jobs=-1)
+        search = RandomizedSearchCV(
+            pipe,
+            param_grid,
+            n_iter=10,
+            n_jobs=-1
+        )
+
         search.fit(np.array(x_train), y_train_labels)
 
         self.svm_model = search.best_estimator_
