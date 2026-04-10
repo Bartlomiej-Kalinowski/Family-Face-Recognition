@@ -78,9 +78,10 @@ class FaceDatabase:
                 """
                 INSERT OR REPLACE INTO faces (original_image, face_id, dataset_id,  image_path, bbox, embedding,
                 manual_label, svm_prediction, ground_truth_label, is_test)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (orig_image, face_id, dataset, image_path, json.dumps(bbox), emb_json, manual_label, svm_prediction, ground_truth, is_test))
+                (orig_image, face_id, dataset, image_path, json.dumps(bbox), emb_json, manual_label
+                     , svm_prediction, ground_truth, is_test))
         except Exception as e:
             print(f"[SQL ERROR] save_face: {e}")
 
@@ -100,7 +101,7 @@ class FaceDatabase:
 
     def mark_as_processed(self, image_path: str, dataset: int = 1) -> None:
         """Mark an original image path as already scanned."""
-        self._cursor.execute("INSERT OR IGNORE INTO processed_images (path) VALUES (?, ?)"
+        self._cursor.execute("INSERT OR IGNORE INTO processed_images (path, dataset_id) VALUES (?, ?)"
                              ,(image_path, dataset))
         self._conn.commit()
 
@@ -186,14 +187,14 @@ class FaceDatabase:
 
     def exists_in_db(self, image_path: str, dataset: int = 1) -> bool:
         """Check if a face image path is already in the database."""
-        self._cursor.execute("SELECT 1 FROM faces WHERE image_path = ? NAD dataset_id = ?"
+        self._cursor.execute("SELECT 1 FROM faces WHERE image_path = ? AND dataset_id = ?"
                              , (image_path, dataset))
         return self._cursor.fetchone() is not None
 
-    def clear_database(self) -> None:
+    def clear_database(self, dataset: int = 1) -> None:
         """Delete all face and processed-image records."""
-        self._cursor.execute("DELETE FROM faces")
-        self._cursor.execute("DELETE FROM processed_images")
+        self._cursor.execute("DELETE FROM faces WHERE dataset_id = ?", (dataset, ))
+        self._cursor.execute("DELETE FROM processed_images WHERE dataset_id = ?", (dataset, ))
         self._conn.commit()
         print("Database cleared.")
 

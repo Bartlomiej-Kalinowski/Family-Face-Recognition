@@ -195,6 +195,24 @@ class FaceInterface(QMainWindow):
             return "use_existing"
         return "cancel"
 
+    def ask_for_scan_dataset_id(self) -> int:
+        msg = QMessageBox()
+        msg.setWindowTitle("Etykietowanie")
+        msg.setText("Wybierz, nad którym datasetem pracujesz?: :")
+        fst_btn = msg.addButton("1", QMessageBox.ActionRole)
+        snd_btn = msg.addButton("2", QMessageBox.ActionRole)
+        trd_btn = msg.addButton("3", QMessageBox.ActionRole)
+        msg.addButton("Anuluj", QMessageBox.RejectRole)
+        msg.exec_()
+        if msg.clickedButton() == fst_btn:
+            return 1
+        elif msg.clickedButton() == snd_btn:
+            return 2
+        elif msg.clickedButton() == trd_btn:
+            return 3
+        else:
+            return -1
+
     def refresh_classified_faces(self, face_data_list, callback):
         """Rebuild the grid from `(face_id, label, ...)` records."""
         for i in reversed(range(self.grid_layout.count())):

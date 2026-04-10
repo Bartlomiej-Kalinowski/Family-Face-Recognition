@@ -1,5 +1,16 @@
 ﻿"""Machine-learning components for face extraction, clustering, and classification."""
 
+from database import FaceDatabase
+
+try:
+    import torch
+    from ultralytics import YOLO
+
+    _ = torch.empty(1)
+except Exception:
+    print("Blad importu biblioteki ultralytics lub pytorch")
+    exit(0)
+
 import cv2
 import numpy as np
 from sklearn.cluster import DBSCAN
@@ -11,19 +22,16 @@ from sklearn.preprocessing import Normalizer
 from tqdm import tqdm
 from sklearn.decomposition import PCA, IncrementalPCA
 
-from database import FaceDatabase
-
 
 
 class FaceExtractor:
     """Detect faces with YOLO and compute HOG embeddings for each crop."""
 
-    def __init__(self, config):
-        from ultralytics import YOLO
-        """Load the YOLO detector using paths from the config object."""
+    def __init__(self, config, db: FaceDatabase, dataset_id: int = 1):
         self.config = config
         self.detector = YOLO(config.YOLO_MODEL_PATH)
-        self.db = FaceDatabase(self.config)
+        self.db = db
+        self.dataset = dataset_id
 
     @staticmethod
     def recompute_one_embedding(face_image_path):
@@ -49,10 +57,10 @@ class FaceExtractor:
         update_errors = 0
         nb_features = None
         # 1. Trenowanie PCA paczkami (partial_fit)
-        for face_id, img_path, face_emb in tqdm(self.db.embedding_generator(), "Fitting PCA"):
+        for face_id, img_path, face_emb in tqdm(self.db.embedding_generator(self.dataset), "Fitting PCA"):
             face_emb = self.recompute_one_embedding(img_path)
             nb_features = face_emb.shape
-            success = self.db.update_emd(face_emb, face_id)
+            success = self.db.update_emd(face_emb, face_id, dataset=self.dataset)
             if success:
                 updated_correctly += 1
             else:
@@ -77,7 +85,7 @@ class FaceExtractor:
         nb_features = None
 
         # 2. Transformacja i normalizacja każdego embeddingu
-        for face_id, _, face_emb in tqdm(self.db.embedding_generator(), "Transforming"):
+        for face_id, _, face_emb in tqdm(self.db.embedding_generator(self.dataset), "Transforming"):
             # PCA wymaga danych w formacie 2D, więc robimy reshape(1, -1)
             reduced = pca.transform(face_emb.reshape(1, -1))
 
@@ -86,7 +94,7 @@ class FaceExtractor:
             nb_features = final_emb.shape
 
             # Aktualizacja w bazie - zwraca True/False
-            success = self.db.update_emd(final_emb, face_id)
+            success = self.db.update_emd(final_emb, face_id, dataset=self.dataset)
             if success:
                 updated_correctly += 1
             else:
@@ -132,11 +140,12 @@ class FaceExtractor:
         return faces_data
 
 class FaceClusterer:
-    def __init__(self):
+    def __init__(self, dataset_id: int = 1):
         self.X_normalized = None
+        self.dataset = dataset_id
 
     def get_data(self):
-        self.X_normalized = self.db.get_all_embeddings_without_ground_truth
+        self.X_normalized = self.db.get_all_embeddings_without_ground_truth(self.dataset)
 
     def check_data_density(self):
         from sklearn.neighbors import NearestNeighbors
@@ -199,8 +208,7 @@ class FaceClassifier:
         from scipy.stats import loguniform
         from sklearn.model_selection import RandomizedSearchCV
         pipe = Pipeline([
-            ("pca", PCA(n_components=0.7)),
-            ("clf", OneVsRestClassifier(
+                ("clf", OneVsRestClassifier(
                 SVC(kernel="rbf", probability=True, class_weight="balanced"),
                 n_jobs=-1
             )),

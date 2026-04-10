@@ -2,32 +2,58 @@
 
 from __future__ import annotations
 
-from collections import deque
+from ml_engine import FaceExtractor, FaceClassifier
+
 import os
 import re
+import shutil
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QMessageBox
-from sklearn.cluster import DBSCAN
+from collections import deque
+from PyQt5.QtWidgets import QApplication, QMessageBox, QInputDialog
 
 from config import Config
 from database import FaceDatabase
 from interface import FaceInterface
-from rename_tool import _rename_file_and_sync_db
-
-from ml_engine import FaceExtractor
-
 
 
 class GroundTruthClusterTool:
     """Label all unlabeled faces by iterating DBSCAN clusters and manual corrections."""
 
-    def __init__(self, min_cluster_size: int = 3, max_cluster_preview: int = 24):
-        self.config = Config()
-        self.db = FaceDatabase(self.config)
+    def __init__(self, config: Config, db: FaceDatabase, min_cluster_size: int = 3):
+        """Initialize tool with dependency injection for Config and DB."""
+        self.config = config
+        self.db = db
         self.ui = FaceInterface()
+        self.classifier = FaceClassifier()
+
         self.min_cluster_size = max(2, int(min_cluster_size))
-        # self.max_cluster_preview = max(4, int(max_cluster_preview))
         self._label_next_index: dict[str, int] = {}
+        self.dataset_id: int = 1
+
+    def _setup_session_via_gui(self) -> bool:
+        """Prompt user for dataset ID and preprocessing options via UI."""
+        # 1. Wybór Datasetu
+        items = ["1", "2", "3"]
+        item, ok = QInputDialog.getItem(
+            self.ui, "Wybór Datasetu", "Na którym zestawie danych chcesz pracować?", items, 0, False
+        )
+        if not ok:
+            return False
+        self.dataset_id = int(item)
+
+        # 2. Pytanie o Recompute Embeddings
+        reply = QMessageBox.question(
+            self.ui,
+            "Przygotowanie danych",
+            "Czy chcesz ponownie przeliczyć embeddingi (HOG + PCA) przed startem klastrowania?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            extractor = FaceExtractor(self.config, self.db, dataset_id=self.dataset_id)
+            extractor.compute_embedding_from_crop()
+
+        return True
 
     @staticmethod
     def _sanitize_label(label: str) -> str:
@@ -40,8 +66,8 @@ class GroundTruthClusterTool:
             return
 
         self.db._cursor.execute(
-            "SELECT face_id FROM faces WHERE face_id LIKE ?",
-            (f"{safe_label}_%",),
+            "SELECT face_id FROM faces WHERE face_id LIKE ? AND dataset_id = ?",
+            (f"{safe_label}_%", self.dataset_id),
         )
         max_idx = 0
         for (face_id,) in self.db._cursor.fetchall():
@@ -59,150 +85,150 @@ class GroundTruthClusterTool:
             candidate = f"{safe_label}_{next_idx:04d}"
             candidate_path = os.path.join(self.config.FACES_DIR, f"{candidate}.jpg")
 
-            self.db._cursor.execute("SELECT 1 FROM faces WHERE face_id = ?", (candidate,))
+            self.db._cursor.execute(
+                "SELECT 1 FROM faces WHERE face_id = ? AND dataset_id = ?",
+                (candidate, self.dataset_id)
+            )
             db_has_id = self.db._cursor.fetchone() is not None
             fs_has_file = os.path.exists(candidate_path)
+
             if not db_has_id and not fs_has_file:
                 self._label_next_index[safe_label] = next_idx + 1
                 return candidate, os.path.abspath(candidate_path)
 
             next_idx += 1
 
-    def _rename_face(self, old_face_id: str, safe_label: str) -> str:
-        """Rename crop file and synchronize `face_id`/`image_path` via DB API."""
+    def _rename_face_and_sync(self, old_face_id: str, safe_label: str) -> None:
+        """Safely rename the physical file and update database references."""
         new_face_id, new_face_path = self._allocate_new_name(safe_label)
         old_face_path = os.path.join(self.config.FACES_DIR, f"{old_face_id}.jpg")
-        _rename_file_and_sync_db(self.db,
-                                 old_face_path,
-                                 new_face_path,
-                                 old_face_id,
-                                 new_face_id )
 
-    def _get_unlabeled_map(self) -> dict[str, np.ndarray]:
-        """Return `{face_id: embedding}` for all unlabeled rows."""
-        rows = self.db.get_all_embeddings_without_ground_truth()
-        return {fid: emb for fid, emb in rows}
+        # 1. Zmiana nazwy pliku na dysku (jeśli istnieje)
+        if os.path.exists(old_face_path):
+            shutil.move(old_face_path, new_face_path)
 
-    def _cluster(self, pending_ids: list[str], emb_map: dict[str, np.ndarray]) -> list[list[str]]:
-        """Run DBSCAN on pending IDs and return valid clusters sorted by size."""
-        if len(pending_ids) < self.min_cluster_size:
-            return []
+        # 2. Aktualizacja rekordu w bazie danych
+        # Zakładam standardowe kolumny na podstawie Twoich poprzednich skryptów
+        self.db._cursor.execute(
+            """UPDATE faces 
+               SET face_id = ?, manual_label = ?, is_test = 0 
+               WHERE face_id = ? AND dataset_id = ?""",
+            (new_face_id, safe_label, old_face_id, self.dataset_id)
+        )
+        self.db._conn.commit()
 
-        embeddings = np.array([emb_map[fid] for fid in pending_ids], dtype=np.float32)
-        labels = DBSCAN(eps=0.25, min_samples=2, metric="cosine").fit_predict(embeddings)
+    def _get_unlabeled_data(self) -> tuple[list[str], np.ndarray]:
+        """Fetch all unlabeled faces and return strictly typed IDs and Embeddings."""
+        rows = self.db.get_all_embeddings_without_ground_truth(dataset=self.dataset_id)
+        print(f"[INFO] Pobieram {len(rows)} nieetykietowanych twarzy...")
+        if not rows:
+            return [], np.array([])
 
-
-        raw: dict[int, list[str]] = {}
-        for fid, label in zip(pending_ids, labels):
-            raw.setdefault(int(label), []).append(fid)
-
-        valid = []
-        for cid, fids in raw.items():
-            if cid == -1:
-                continue
-            if len(fids) >= self.min_cluster_size:
-                valid.append(fids)
-
-        valid.sort(key=len, reverse=True)
-        return valid
+        fids = [row[0] for row in rows]
+        # Bezpieczne rzutowanie list na macierz float32 wymaganą przez Scikit-Learn
+        embs = np.array([row[1] for row in rows], dtype=np.float32)
+        return fids, embs
 
     def _assign_label(self, face_ids: list[str], label: str) -> int:
-        """Rename faces and persist ground-truth label for selected records."""
+        """Rename files and persist ground-truth label for selected records."""
         clean_label = label.strip()
         safe_label = self._sanitize_label(clean_label)
+
         if not clean_label or not safe_label:
             return 0
 
         written = 0
+        total = len(face_ids)
         for idx, fid in enumerate(face_ids, start=1):
-            self._rename_face(fid, safe_label)
-            # Keep manual label for training/query compatibility while IDs follow rename_tool style.
+            self._rename_face_and_sync(fid, safe_label)
             written += 1
-            self.ui.update_progress(idx, len(face_ids), f"Zapisywanie: {clean_label}")
-            QApplication.processEvents()
+
+            # Odświeżanie GUI co kilka iteracji lub na końcu
+            if idx % 5 == 0 or idx == total:
+                self.ui.update_progress(idx, total, f"Zapisywanie: {clean_label}")
+                QApplication.processEvents()
+
         return written
 
-    def _review_cluster(self, cluster_ids: list[str]) -> tuple[bool, int]:
-        """Show cluster dialog and save selected faces.
-
-        Returns `(continue_labeling, written_count)`.
-        """
-        preview_ids = cluster_ids
-        selected, name = self.ui.bulk_verify_faces(preview_ids)
-        if selected is None and name is None:
-            return False, 0
-        if not selected:
-            return True, 0
-        return True, self._assign_label(selected, name)
-
-    def _review_single_face(self, face_id: str) -> tuple[bool, int]:
-        """Fallback labeling for outliers that do not form DBSCAN clusters."""
-        selected, name = self.ui.bulk_verify_faces([face_id])
-        if selected is None and name is None:
-            return False, 0
-        if not selected:
-            return True, 0
-        return True, self._assign_label(selected, name)
-
     def run(self) -> None:
-        """Drive the full loop until all faces are labeled or user exits."""
+        """Main workflow for clustering and batch labeling."""
         print("[INFO] Start etykietowania ground truth przez DBSCAN + GUI.")
+
+        # 1. Konfiguracja początkowa przez GUI
+        if not self._setup_session_via_gui():
+            print("[INFO] Operacja przerwana przez użytkownika.")
+            return
+
+        # 2. Pobranie niepodpisanych danych
+        fids, embeddings = self._get_unlabeled_data()
+
+        if len(fids) == 0:
+            QMessageBox.information(self.ui, "Gotowe", "Wszystkie twarze mają już etykiety.")
+            return
+
+        if len(fids) < self.min_cluster_size:
+            QMessageBox.warning(self.ui, "Brak danych", "Za mało niepodpisanych twarzy by użyć DBSCAN.")
+            return
+
+        print(f"[INFO] Rozpoczynam klastrowanie {len(fids)} twarzy...")
+
+        # 3. Uruchomienie DBSCAN (metoda z FaceClassifier)
+        clusters_dict = self.classifier.get_face_clusters(embeddings, fids)
+
+        # Odfiltrowanie małych klastrów i sortowanie od największych
+        valid_clusters = [cfids for cid, cfids in clusters_dict.items() if len(cfids) >= self.min_cluster_size]
+        valid_clusters.sort(key=len, reverse=True)
+
+        if not valid_clusters:
+            QMessageBox.information(self.ui, "Wynik DBSCAN", "Algorytm nie znalazł żadnych wyraźnych grup.")
+            return
+
+        # 4. Przekazanie klastrów do GUI do masowego zatwierdzenia
         rounds_without_progress = 0
 
-        while True:
-            emb_map = self._get_unlabeled_map() # all embeddings without ground truth label in DB
-            pending = list(emb_map.keys())
-            if not pending:
-                print("[SUKCES] Wszystkie twarze zostały podpisane.")
-                QMessageBox.information(self.ui, "Gotowe", "Wszystkie twarze mają etykiety ground truth.")
-                return
+        for cluster_fids in valid_clusters:
+            # Pobieramy pełne pary (fid, path) by UI mogło wyświetlić obrazki
+            cluster_data = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset_id)
 
-            print(f"[INFO] Pozostało niepodpisanych twarzy: {len(pending)}")
-            clusters = self._cluster(pending, emb_map)
-            progress_in_round = 0
+            # Wywołanie Bulk UI
+            selected_fids, label_name = self.ui.bulk_verify_faces(cluster_data)
 
-            if clusters:
-                keep_going, written = self._review_cluster(clusters[0])
-                if not keep_going:
-                    print("[INFO] Przerwano na żądanie użytkownika.")
-                    return
-                progress_in_round += written
+            # Obsługa przycisku "Anuluj" lub zamknięcia okna
+            if selected_fids is None and label_name is None:
+                print("[INFO] Przerwano etykietowanie na żądanie użytkownika.")
+                break
+
+            # Jeśli użytkownik coś podpisał
+            if selected_fids and label_name:
+                written = self._assign_label(selected_fids, label_name)
+                if written > 0:
+                    rounds_without_progress = 0
+                else:
+                    rounds_without_progress += 1
             else:
-                queue = deque(pending)
-                while queue and progress_in_round == 0:
-                    fid = queue.popleft()
-                    keep_going, written = self._review_single_face(fid)
-                    if not keep_going:
-                        print("[INFO] Przerwano na żądanie użytkownika.")
-                        return
-                    progress_in_round += written
-                    if written == 0:
-                        queue.append(fid)
-                    if len(queue) == len(pending) and progress_in_round == 0:
-                        break
-
-            if progress_in_round == 0:
                 rounds_without_progress += 1
-                if rounds_without_progress >= 2:
-                    QMessageBox.warning(
-                        self.ui,
-                        "Brak postępu",
-                        "Nie zapisano żadnej etykiety w ostatnich iteracjach.\n"
-                        "Odkliknięte twarze będą pojawiać się ponownie, ale bez potwierdzeń "
-                        "narzędzie nie zakończy podpisywania wszystkich twarzy.",
-                    )
-                    return
-            else:
-                rounds_without_progress = 0
+
+            if rounds_without_progress >= 3:
+                QMessageBox.warning(
+                    self.ui,
+                    "Brak postępu",
+                    "Pominięto kilka grup z rzędu. Przerywam automatyczne podpowiadanie."
+                )
+                break
+
+        print("[INFO] Zakończono sesję etykietowania.")
+        QMessageBox.information(self.ui, "Koniec", "Sesja klastrowania i podpisywania zakończona.")
 
 
 if __name__ == "__main__":
-    tool = GroundTruthClusterTool()
-    is_changed_embds = int(input("recompute embds?(0/1): 0 - no, 1 - yes:\t"))
-    if is_changed_embds == 1:
-        tool.db.recompute_all_embeddings(FaceExtractor.compute_embedding_from_crop)
-        tool.db.close()
+    # Inicjalizacja zależności przed startem logiki
+    app_config = Config()
+    app_db = FaceDatabase(app_config)
+
+    tool = GroundTruthClusterTool(config=app_config, db=app_db)
+
     try:
         tool.run()
     finally:
-        tool.db.close()
+        # Zawsze bezpiecznie zamykamy bazę na końcu pliku głównego
+        app_db.close()

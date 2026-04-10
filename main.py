@@ -7,17 +7,6 @@ import sys
 from datetime import datetime
 import json
 
-
-# Load torch/ultralytics early to avoid runtime initialization issues with Qt event loop.
-try:
-    from ultralytics import YOLO
-    import torch
-
-    _ = torch.empty(1)
-except Exception:
-    print("Blad importu biblioteki ultralytics lub pytorch")
-    exit(0)
-
 import cv2
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMessageBox # only for visualisation
@@ -34,29 +23,31 @@ class SmartLabelerController:
     """Coordinate scan, labeling, training, prediction, and visualization stages."""
 
     def __init__(self):
-        """Initialize core services and UI for the application session."""
         self.config = Config()
+        # 1. Tworzymy obiekt bazy danych w całej aplikacji
         self.db = FaceDatabase(self.config)
-        self.extractor = FaceExtractor(self.config)
+        # 2. Przekazujemy ten sam obiekt (referencję) do ekstraktora
+        self.extractor = FaceExtractor(self.config, self.db)
         self.classifier = FaceClassifier()
         self.ui = FaceInterface()
+        self.dataset = 1
         self.ui.set_visualize_callback(self._on_generate_visualization_clicked)
 
     def _manual_fix_callback(self, face_id: str, new_name: str) -> None:
         """Persist a manual label correction triggered from the UI."""
         print(f"Poprawka ręczna: {face_id} -> {new_name}")
-        self.db.set_manual_label(face_id, new_name)
+        self.db.set_manual_label(face_id, new_name, dataset=self.dataset)
         self.refresh_main_view()
 
     def refresh_main_view(self) -> None:
         """Reload labeled records from the database and repopulate the UI grid."""
-        labeled_faces = self.db.get_all_labeled_faces()
+        labeled_faces = self.db.get_all_labeled_faces(dataset=self.dataset)
         self.ui.refresh_classified_faces(labeled_faces, self._manual_fix_callback)
 
     def run_initial_scan(self, mode: str, limit: int = 100000, callback=None) -> None:
         """Scan source images, extract faces, and store face crops with embeddings."""
         if mode == "full":
-            self.db.clear_database()
+            self.db.clear_database(self.dataset)
             print("Clearing database...")
             for crop in os.listdir(self.config.FACES_DIR):
                 os.remove(os.path.join(self.config.FACES_DIR, crop))
@@ -68,7 +59,7 @@ class SmartLabelerController:
             if f_name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".heic"))
         ]
 
-        processed_paths = set(self.db.get_all_processed_paths())
+        processed_paths = set(self.db.get_all_processed_paths(dataset=self.dataset))
         to_process = [path for path in all_paths if path not in processed_paths][:limit]
 
         if not to_process:
@@ -91,8 +82,9 @@ class SmartLabelerController:
                 for j, face in enumerate(detected_faces):
                     fid = f"{safe_name}_f{j}"
                     clean_emb = np.array(face["embedding"]).flatten().astype(np.float32).tolist()
-                    self.db.save_face(face["original_image"],face["crop"], fid, full_path, face["bbox"], clean_emb)
-                self.db.mark_as_processed(full_path)
+                    self.db.save_face(face["original_image"],face["crop"], fid, full_path, face["bbox"]
+                                      ,self.dataset, clean_emb)
+                self.db.mark_as_processed(full_path, dataset=self.dataset)
                 self.db._conn.commit()
 
                 if callback:
@@ -100,7 +92,7 @@ class SmartLabelerController:
             except Exception as e:
                 pbar.write(f"Błąd: {e}")
 
-        total_faces = self.db.get_total_faces_count()
+        total_faces = self.db.get_total_faces_count(dataset=self.dataset)
         if hasattr(self, "ui"):
             self.ui.update_face_stats(total_faces)
 
@@ -120,7 +112,7 @@ class SmartLabelerController:
         total = len(selected_fids)
         for i, fid in enumerate(selected_fids):
             # Zapisujemy w bazie
-            self.db.set_manual_label(fid, name, is_test=0)
+            self.db.set_manual_label(fid, name, dataset=self.dataset, is_test=0)
 
             if i % 10 == 0:  # Optymalizacja odświeżania paska postępu
                 self.ui.update_progress(i + 1, total, f"Zapisywanie: {name}")
@@ -135,7 +127,7 @@ class SmartLabelerController:
 
     def run_clustering_phase(self) -> dict:
         """Run DBSCAN clustering and return whether training can continue."""
-        unlabeled_data = self.db.get_all_embeddings_without_ground_truth()
+        unlabeled_data = self.db.get_all_embeddings_without_ground_truth(dataset=self.dataset)
         print("Number of unlabeled faces in database -- test:\t", len(unlabeled_data))
         if not unlabeled_data:
             print("[INFO] No unlabeled embeddings in database for clustering!")
@@ -158,13 +150,13 @@ class SmartLabelerController:
             print("Number of faces in cluster:\t", len(cluster_fids))
 
             # Pobieramy ścieżki do zdjęć dla tego klastra, żeby GUI mogło je wyświetlić
-            cluster_fids_and_paths = self.db.get_paths_for_fids(cluster_fids)
+            cluster_fids_and_paths = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset)
 
             # Przekazujemy pary do funkcji bulk
             self.process_bulk_selection(cluster_fids_and_paths)
 
         # number of manual labels after DBSCAN
-        labeled_count = len(set(label for _, label, _ in self.db.get_labeled_data_for_train()))
+        labeled_count = len(set(label for _, label, _ in self.db.get_labeled_data_for_train(dataset=self.dataset)))
         ready_for_training = labeled_count >= 2
         if not ready_for_training:
             print("Too less train different labels (min. 2 required), to start SVM prediction!")
@@ -174,9 +166,9 @@ class SmartLabelerController:
         """Train the SVM pipeline and return train samples for evaluation."""
         print("\n[SYSTEM] Starting train phase...")
 
-        self.db.mark_unlabeled_as_test() # unlabeled data as test data
+        self.db.mark_unlabeled_as_test(dataset=self.dataset) # unlabeled data as test data
 
-        train_data = self.db.get_labeled_data_for_train()
+        train_data = self.db.get_labeled_data_for_train(dataset=self.dataset)
         if not train_data:
             print("[BŁĄD] Brak danych treningowych w bazie.")
             return None
@@ -192,7 +184,7 @@ class SmartLabelerController:
 
     def run_evaluation_phase(self, train_data):
         """Run predictions for test data, log metrics, and refresh UI with results."""
-        test_data = self.db.get_unlabeled_test_data()
+        test_data = self.db.get_unlabeled_test_data(dataset=self.dataset)
 
         if not test_data:
             print("[INFO] Brak nowych danych testowych do klasyfikacji.")
@@ -231,7 +223,7 @@ class SmartLabelerController:
         _ = confidences
 
         for fid, pred in zip(fids, y_pred):
-            self.db.set_svm_prediction(fid, pred)
+            self.db.set_svm_prediction(fid, pred, dataset=self.dataset)
 
         classified_list = list(zip(fids, y_pred))
         self.ui.refresh_classified_faces(classified_list, self._manual_fix_callback)
@@ -277,10 +269,14 @@ class SmartLabelerController:
 
     def start(self) -> None:
         """Start the application workflow based on the selected scan mode."""
+        self.dataset = self.ui.ask_for_scan_dataset_id()
+        if self.dataset == -1:
+            print("Kończę działanie aplikacji...")
+            return
         mode = self.ui.ask_for_scan_mode()
 
         if mode == "use_existing":
-            self.db.rebuild_db_from_files()
+            self.db.rebuild_db_from_files(dataset=self.dataset)
             self.app_pipeline()
         elif mode == "full":
             for img in os.listdir(self.config.ANNOTATED_FACES_DIR):
@@ -350,9 +346,10 @@ class SmartLabelerController:
         """Draw labels on face images and save visualized results to `target_dir`."""
         print("[SYSTEM] Generowanie boksów i etykiet na wszystkich twarzach...")
 
-        results = self.db.get_all_labeled_faces()
+        results = self.db.get_all_labeled_faces(dataset=self.dataset)
 
-        for original_image_path, _face_id, label, is_manual, _source_image_path, bbox_raw in results:
+        for original_image_path, _face_id, label, manual_label, _source_image_path, bbox_raw in results:
+            is_manual = manual_label is not None
             visualized_path = self._get_visualization_path(original_image_path, target_dir)
 
             if not os.path.exists(visualized_path):
