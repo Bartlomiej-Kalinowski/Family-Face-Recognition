@@ -131,7 +131,6 @@ class FaceDatabase:
             (dataset,)
         )
         rows = self._cursor.fetchall()
-        print(len(rows[0][1]))
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb in rows]
 
     def get_unlabeled_test_data(self, dataset: int = 1) -> list:

@@ -50,7 +50,7 @@ class FaceExtractor:
         pca = IncrementalPCA(n_components=150)
         scaler = Normalizer(norm='l2')
 
-        print("--- Preprocessing, part I: Fitting PCA ---")
+        print("--- Preprocessing, part I: Fitting PCA ---", flush=True)
         batch_size = 150
         batch_embs = []
         updated_correctly = 0
@@ -76,7 +76,7 @@ class FaceExtractor:
         if len(batch_embs) > 0:
             pca.partial_fit(np.array(batch_embs))
 
-        print("--- Preprocessing, part I: Transforming & Normalizing ---")
+        print("--- Preprocessing, part I: Transforming & Normalizing ---", flush=True)
         print(f"Updated correctly, part I: {updated_correctly}")
         print(f"Errors, part I: {update_errors}")
         print("Emb shape part I: ", nb_features)

@@ -108,7 +108,6 @@ class GroundTruthClusterTool:
             shutil.move(old_face_path, new_face_path)
 
         # 2. Aktualizacja rekordu w bazie danych
-        # Zakładam standardowe kolumny na podstawie Twoich poprzednich skryptów
         self.db._cursor.execute(
             """UPDATE faces 
                SET face_id = ?, manual_label = ?, is_test = 0 
@@ -161,6 +160,7 @@ class GroundTruthClusterTool:
 
         # 2. Pobranie niepodpisanych danych
         fids, embeddings = self._get_unlabeled_data()
+        print("Dlugosc wektora twarzy: ", len(embeddings[0]))
 
         if len(fids) == 0:
             QMessageBox.information(self.ui, "Gotowe", "Wszystkie twarze mają już etykiety.")

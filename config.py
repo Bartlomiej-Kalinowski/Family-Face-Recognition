@@ -8,7 +8,7 @@ from pathlib import Path
 class Config:
     """Store global configuration constants used by the application."""
 
-    YOLO_MODEL_PATH = "./face_detection_model/yolov8n-face.pt"
+    YOLO_MODEL_PATH = r"C:\Users\Kalin\PycharmProjects\LIC\face_detection_model\yolov8n-face.pt"
 
     BASE_DIR = Path(__file__).resolve().parent
     OUTPUT_DIR = str(BASE_DIR / "output_data")
