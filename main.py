@@ -1,5 +1,7 @@
 ﻿"""Application controller tying together UI, database, and ML workflows."""
 
+from ml_engine import FaceClassifier, FaceExtractor
+
 import hashlib
 import os
 import shutil
@@ -16,7 +18,6 @@ from tqdm import tqdm
 from config import Config
 from database import FaceDatabase
 from interface import FaceInterface
-from ml_engine import FaceClassifier, FaceExtractor
 
 
 class SmartLabelerController:
@@ -239,9 +240,6 @@ class SmartLabelerController:
     def app_pipeline(self) -> None:
         """Manage clustering -> classification -> evaluation using explicit returns."""
         #-------------clustering and labeling by user------------------------
-        is_preprocessing = int(input("Do you want to recompute_embds(0 - no, 1 - yes):\t"))
-        if is_preprocessing:
-            self.preprocessing_phase()
         clustering_result = self.run_clustering_phase()
         if not clustering_result["ready_for_training"]:
             return
@@ -276,16 +274,26 @@ class SmartLabelerController:
         mode = self.ui.ask_for_scan_mode()
 
         if mode == "use_existing":
+            reply = QMessageBox.question(
+                self.ui,
+                "Przygotowanie danych",
+                "Czy chcesz ponownie przeliczyć embeddingi (HOG + PCA) przed startem klastrowania?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+
+            if reply == QMessageBox.Yes:
+                self.preprocessing_phase()
             self.db.rebuild_db_from_files(dataset=self.dataset)
             self.app_pipeline()
         elif mode == "full":
             for img in os.listdir(self.config.ANNOTATED_FACES_DIR):
                 os.remove(os.path.join(self.config.ANNOTATED_FACES_DIR, img))
-
             self.run_initial_scan(mode=mode, limit=100000)
+            self.preprocessing_phase()
             self.app_pipeline()
         elif mode == "incremental":
             self.run_initial_scan(mode=mode, limit=100000)
+            self.preprocessing_phase()
             self.app_pipeline()
         elif mode == "cancel":
             return

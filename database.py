@@ -43,7 +43,7 @@ class FaceDatabase:
                 embedding BLOB,
                 manual_label TEXT,
                 svm_prediction TEXT,
-                ground_truth_label TEXT,
+                ground_truth_label TEXT DEFAULT NULL,
                 is_test INTEGER DEFAULT 0
             )
             """
@@ -112,16 +112,20 @@ class FaceDatabase:
 
     def get_all_unlabeled_embeddings(self, dataset: int = 1):
         self._cursor.execute(
-            "SELECT face_id, embedding FROM faces WHERE "
-            "dataset_id = ? AND manual_label IS NULL AND embedding IS NOT NULL AND ground_truth_label != 'None'",
+            """SELECT face_id, embedding FROM faces WHERE
+            dataset_id = ? AND ground_truth_label IS NULL""",
             (dataset, )
         )
-        while True:
-            rows = self._cursor.fetchmany(1000)
-            if not rows:
-                break
-            for fid, emb in rows:
-                yield fid, np.array(json.loads(emb)).astype(np.float32)
+        rows = self._cursor.fetchall()
+        missing_faces = 0
+        for fid, p in rows:
+            if not os.path.exists(p):
+                rows.remove((fid, p))
+                print("Brak pliku dla: ", fid)
+                missing_faces += 1
+        print(f"Dla {missing_faces} rekordow w bazie danych nie znaleziono pliku z twarzą")
+        return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb in rows]
+
 
     def get_all_embeddings_without_ground_truth(self, dataset: int = 1) -> list:
         """Return unlabeled faces as `(face_id, embedding_np)` tuples."""
@@ -131,6 +135,13 @@ class FaceDatabase:
             (dataset,)
         )
         rows = self._cursor.fetchall()
+        missing_faces = 0
+        for fid, p in rows:
+            if not os.path.exists(p):
+                rows.remove((fid, p))
+                print("Brak pliku dla: ", fid)
+                missing_faces += 1
+        print(f"Dla {missing_faces} rekordow w bazie danych nie znaleziono pliku z twarzą")
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb in rows]
 
     def get_unlabeled_test_data(self, dataset: int = 1) -> list:
@@ -285,17 +296,22 @@ class FaceDatabase:
     def embedding_generator(self, dataset: int = 1):
         read_cursor = self._conn.cursor()
         read_cursor.execute(
-            "SELECT face_id, image_path, embedding FROM faces WHERE ground_truth_label != 'None' AND dataset_id = ?",
+            "SELECT face_id, image_path, embedding FROM faces WHERE dataset_id = ?",# mozna dodac warunek ground_truth == 'None'
             (dataset, )
         )
+        missing_files = 0
         while True:
             row = read_cursor.fetchone()
             if row is None:
                 break
             face_id, image_path, emb_json = row
+            if not os.path.exists(image_path):
+                missing_files += 1
+                continue
             if emb_json:
                 emb = np.array(json.loads(emb_json), dtype=np.float32)
                 yield face_id, image_path, emb
+        print(f"Missing file for {missing_files} paths")
 
 
     def update_emd(self, face_emb, face_id, dataset: int = 1):

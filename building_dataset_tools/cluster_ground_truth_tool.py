@@ -103,22 +103,32 @@ class GroundTruthClusterTool:
         new_face_id, new_face_path = self._allocate_new_name(safe_label)
         old_face_path = os.path.join(self.config.FACES_DIR, f"{old_face_id}.jpg")
 
-        # 1. Zmiana nazwy pliku na dysku (jeśli istnieje)
-        if os.path.exists(old_face_path):
-            shutil.move(old_face_path, new_face_path)
+        if not os.path.exists(old_face_path):
+            print(f"[ERROR] Plik źródłowy nie istnieje: {old_face_path}. Pomijam aktualizację DB.")
+            return  # NIE aktualizujemy bazy, jeśli nie ma pliku!
 
-        # 2. Aktualizacja rekordu w bazie danych
+        try:
+            shutil.move(old_face_path, new_face_path)
+        except Exception as e:
+            print(f"[ERROR] Błąd shutil.move: {e}")
+            return
+
+            # 2. Jeśli dysk się udał, aktualizujemy BAZĘ (w tym image_path!)
         self.db._cursor.execute(
-            """UPDATE faces 
-               SET face_id = ?, manual_label = ?, is_test = 0 
-               WHERE face_id = ? AND dataset_id = ?""",
-            (new_face_id, safe_label, old_face_id, self.dataset_id)
+            """UPDATE faces
+               SET face_id            = ?,
+                   image_path         = ?,
+                   ground_truth_label = ?,
+                   is_test            = 0
+               WHERE face_id = ?
+                 AND dataset_id = ?""",
+            (new_face_id, new_face_path, safe_label, old_face_id, self.dataset_id)
         )
         self.db._conn.commit()
 
     def _get_unlabeled_data(self) -> tuple[list[str], np.ndarray]:
         """Fetch all unlabeled faces and return strictly typed IDs and Embeddings."""
-        rows = self.db.get_all_embeddings_without_ground_truth(dataset=self.dataset_id)
+        rows = self.db.get_all_unlabeled_embeddings(dataset=self.dataset_id)
         print(f"[INFO] Pobieram {len(rows)} nieetykietowanych twarzy...")
         if not rows:
             return [], np.array([])
