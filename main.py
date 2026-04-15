@@ -83,7 +83,7 @@ class SmartLabelerController:
                 for j, face in enumerate(detected_faces):
                     fid = f"{safe_name}_f{j}"
                     clean_emb = np.array(face["embedding"]).flatten().astype(np.float32).tolist()
-                    self.db.save_face(face["original_image"],face["crop"], fid, full_path, face["bbox"]
+                    self.db.save_face(face["original_image"],face["crop"], fid, face["bbox"]
                                       ,self.dataset, clean_emb)
                 self.db.mark_as_processed(full_path, dataset=self.dataset)
                 self.db._conn.commit()
@@ -300,7 +300,6 @@ class SmartLabelerController:
 
         self.refresh_main_view()
         sys.exit(self.ui.app.exec_())
-
 
 
     def _get_visualization_path(self, original_image_path: str, target_dir: str) -> str:
