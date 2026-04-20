@@ -19,16 +19,17 @@ from interface import FaceInterface
 class GroundTruthClusterTool:
     """Label all unlabeled faces by iterating DBSCAN clusters and manual corrections."""
 
-    def __init__(self, config: Config, db: FaceDatabase, min_cluster_size: int = 3):
+    def __init__(self, config: Config, db: FaceDatabase, min_cluster_size: int = 1):
         """Initialize tool with dependency injection for Config and DB."""
         self.config = config
         self.db = db
         self.ui = FaceInterface()
         self.classifier = FaceClassifier()
 
-        self.min_cluster_size = max(2, int(min_cluster_size))
+        self.min_cluster_size = min_cluster_size
         self._label_next_index: dict[str, int] = {}
         self.dataset_id: int = 1
+        self.mode = "labeling"
 
     def _setup_session_via_gui(self) -> bool:
         """Prompt user for dataset ID and preprocessing options via UI."""
@@ -41,7 +42,19 @@ class GroundTruthClusterTool:
             return False
         self.dataset_id = int(item)
 
-        # 2. Pytanie o Recompute Embeddings
+        # 2 tryb
+        items = ["labeling", "change record"]
+        item, ok = QInputDialog.getItem(
+            self.ui, "Wybor trybu", "Wybierz tryb: ", items, 0, False
+        )
+        if not ok:
+            return False
+        self.mode = item
+
+        if self.mode == "change record":
+            return True
+
+        # 3. Pytanie o Recompute Embeddings
         reply = QMessageBox.question(
             self.ui,
             "Przygotowanie danych",
@@ -54,6 +67,7 @@ class GroundTruthClusterTool:
             extractor.compute_embedding_from_crop()
 
         return True
+
 
     @staticmethod
     def _sanitize_label(label: str) -> str:
@@ -154,12 +168,47 @@ class GroundTruthClusterTool:
 
             # Odświeżanie GUI co kilka iteracji lub na końcu
             if idx % 5 == 0 or idx == total:
-                self.ui.update_progress(idx, total, f"Zapisywanie: {clean_label}")
+                self.ui.update_progress(idx, total, f"Zapisywanie: {clean_label}", )
                 QApplication.processEvents()
 
         return written
 
+    def change_record(self, dataset: int = 1):
+        old_img_path, ok = QInputDialog.getText(
+            None,
+            "Podaj ścieżkę",
+            "Wklej ścieżkę do pliku z twarzą (zamknij okno by zakonczyc):"
+        )
+
+        if ok and old_img_path:
+            print("Podana ścieżka:", old_img_path)
+
+        else:
+            print("Anulowano lub brak danych")
+            exit(0)
+
+        self.db._cursor.execute("""SELECT face_id FROM faces WHERE dataset_id = ? AND image_path = ?"""
+                                , (dataset, old_img_path))
+
+        face_id = self.db._cursor.fetchone()[0]
+
+        new_label, ok = QInputDialog.getText(
+            None,
+            "Podaj nowa etykietę",
+            "Wklej nową etykietę:"
+        )
+
+        if ok and new_label:
+            print("Podana etykieta:", new_label)
+
+        else:
+            print("Anulowano lub brak danych")
+
+        self._rename_face_and_sync(face_id, new_label)
+
+
     def run(self) -> None:
+
         """Main workflow for clustering and batch labeling."""
         print("[INFO] Start etykietowania ground truth przez DBSCAN + GUI.")
 
@@ -167,6 +216,10 @@ class GroundTruthClusterTool:
         if not self._setup_session_via_gui():
             print("[INFO] Operacja przerwana przez użytkownika.")
             return
+
+        if self.mode == "change record":
+            while True:
+                self.change_record(self.dataset_id)
 
         # 2. Pobranie niepodpisanych danych
         fids, embeddings = self._get_unlabeled_data()
@@ -187,6 +240,7 @@ class GroundTruthClusterTool:
 
         # Odfiltrowanie małych klastrów i sortowanie od największych
         valid_clusters = [cfids for cid, cfids in clusters_dict.items() if len(cfids) >= self.min_cluster_size]
+        print(len(valid_clusters))
         valid_clusters.sort(key=len, reverse=True)
 
         if not valid_clusters:
@@ -196,7 +250,9 @@ class GroundTruthClusterTool:
         # 4. Przekazanie klastrów do GUI do masowego zatwierdzenia
         rounds_without_progress = 0
 
+        to_classify = len(fids)
         for cluster_fids in valid_clusters:
+            print("Liczba twarzy: ", to_classify)
             # Pobieramy pełne pary (fid, path) by UI mogło wyświetlić obrazki
             cluster_data = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset_id)
 
@@ -211,6 +267,7 @@ class GroundTruthClusterTool:
             # Jeśli użytkownik coś podpisał
             if selected_fids and label_name:
                 written = self._assign_label(selected_fids, label_name)
+                to_classify  -= written
                 if written > 0:
                     rounds_without_progress = 0
                 else:
@@ -228,6 +285,7 @@ class GroundTruthClusterTool:
 
         print("[INFO] Zakończono sesję etykietowania.")
         QMessageBox.information(self.ui, "Koniec", "Sesja klastrowania i podpisywania zakończona.")
+
 
 
 if __name__ == "__main__":

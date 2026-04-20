@@ -78,7 +78,7 @@ class FaceExtractor:
             pca.partial_fit(np.array(batch_embs))
 
         print("--- Preprocessing, part I: Transforming & Normalizing ---",file = sys.stderr,flush=True)
-        print(f"Updated correctly, part I: {updated_correctly}")
+        print(f"\nUpdated correctly, part I: {updated_correctly}")
         print(f"Errors, part I: {update_errors}")
         print("Emb shape part I: ", nb_features)
         updated_correctly = 0
@@ -176,7 +176,7 @@ class FaceClassifier:
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
         """Group unlabeled embeddings using DBSCAN with cosine distance."""
 
-        dbscan = DBSCAN(eps=0.35, min_samples=2, metric="cosine")
+        dbscan = DBSCAN(eps=0.4, min_samples=2, metric="cosine")
 
         labels = dbscan.fit_predict(embeddings)
 
