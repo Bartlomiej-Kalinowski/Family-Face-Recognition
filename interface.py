@@ -195,10 +195,10 @@ class FaceInterface(QMainWindow):
             return "use_existing"
         return "cancel"
 
-    def ask_for_scan_dataset_id(self) -> int:
+    def ask_for_scan_dataset_id(self, title, comment) -> int:
         msg = QMessageBox()
-        msg.setWindowTitle("Etykietowanie")
-        msg.setText("Wybierz, nad którym datasetem pracujesz?: :")
+        msg.setWindowTitle(title)
+        msg.setText(comment)
         fst_btn = msg.addButton("1", QMessageBox.ActionRole)
         snd_btn = msg.addButton("2", QMessageBox.ActionRole)
         trd_btn = msg.addButton("3", QMessageBox.ActionRole)

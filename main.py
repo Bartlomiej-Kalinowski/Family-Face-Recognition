@@ -267,7 +267,7 @@ class SmartLabelerController:
 
     def start(self) -> None:
         """Start the application workflow based on the selected scan mode."""
-        self.dataset = self.ui.ask_for_scan_dataset_id()
+        self.dataset = self.ui.ask_for_scan_dataset_id("Etykietowanie", "Wybierz zestaw danych:")
         if self.dataset == -1:
             print("Kończę działanie aplikacji...")
             return

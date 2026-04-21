@@ -140,29 +140,6 @@ class FaceExtractor:
                 })
         return faces_data
 
-# class FaceClusterer:
-#     def __init__(self, dataset_id: int = 1):
-#         self.X_normalized = None
-#         self.dataset = dataset_id
-#
-#     def get_data(self):
-#         self.X_normalized = self.db.get_all_embeddings_without_ground_truth(self.dataset)
-#
-#     def check_data_density(self):
-#         from sklearn.neighbors import NearestNeighbors
-#         import matplotlib.pyplot as plt
-#
-#         # n_neighbors powinno odpowiadać parametrowi min_samples w DBSCAN (zazwyczaj 5)
-#         neigh = NearestNeighbors(n_neighbors=5)
-#         nbrs = neigh.fit(self.X_normalized)
-#         distances, indices = nbrs.kneighbors(self.X_normalized)
-#
-#         distances = np.sort(distances[:, 4], axis=0)
-#         plt.plot(distances)
-#         plt.title("Wykres k-distance")
-#         plt.ylabel("Odległość do 5-tego sąsiada (Eps)")
-#         plt.show()
-
 
 
 class FaceClassifier:
@@ -176,7 +153,7 @@ class FaceClassifier:
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
         """Group unlabeled embeddings using DBSCAN with cosine distance."""
 
-        dbscan = DBSCAN(eps=0.4, min_samples=2, metric="cosine")
+        dbscan = DBSCAN(eps=0.23, min_samples=1, metric="cosine")
 
         labels = dbscan.fit_predict(embeddings)
 

@@ -10,6 +10,7 @@ import shutil
 import numpy as np
 from collections import deque
 from PyQt5.QtWidgets import QApplication, QMessageBox, QInputDialog
+from tqdm import tqdm
 
 from config import Config
 from database import FaceDatabase
@@ -43,7 +44,7 @@ class GroundTruthClusterTool:
         self.dataset_id = int(item)
 
         # 2 tryb
-        items = ["labeling", "change record"]
+        items = ["labeling", "change record", "delete record", "copy dataset"]
         item, ok = QInputDialog.getItem(
             self.ui, "Wybor trybu", "Wybierz tryb: ", items, 0, False
         )
@@ -51,7 +52,8 @@ class GroundTruthClusterTool:
             return False
         self.mode = item
 
-        if self.mode == "change record":
+        # omitting next questions and pop-ups
+        if self.mode == "change record" or self.mode == "copy dataset":
             return True
 
         # 3. Pytanie o Recompute Embeddings
@@ -173,6 +175,35 @@ class GroundTruthClusterTool:
 
         return written
 
+    def copy_dataset(self, src_dataset: int, dst_dataset: int):
+        """Copy all faces from one dataset to another."""
+        if src_dataset == dst_dataset:
+            print("Chciano skopiowac z tego samego datasetu do tego samego. Zamykam program")
+            return False
+        read_cursor = self.db._conn.cursor()
+        offset = 0
+        batch = 50
+        # index to avoid duplicates
+        self.db._cursor.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_face_dataset ON faces (face_id, dataset_id)""")
+        while True:
+            read_cursor.execute(
+                """SELECT face_id, original_image, image_path, bbox, embedding, ground_truth_label 
+                   FROM faces WHERE dataset_id = ? AND ground_truth_label != 'None' ORDER BY face_id LIMIT ? OFFSET ?""",
+                (src_dataset, batch, offset)
+            )
+            rows = read_cursor.fetchall()
+            if not rows:
+                break
+            for fid, orig_image, img_path, bbox, emb,ground_truth in tqdm(rows, "Kopiowanie"):
+
+                self.db._cursor.execute("""INSERT OR IGNORE INTO faces (face_id,  dataset_id, original_image, image_path, bbox,
+                                                      embedding, manual_label, svm_prediction , ground_truth_label, is_test)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (fid, dst_dataset, orig_image, img_path, bbox, emb, None, None, ground_truth, 0))
+            offset += batch
+        self.db._conn.commit()
+        return True
+
     def change_record(self, dataset: int = 1):
         old_img_path, ok = QInputDialog.getText(
             None,
@@ -221,70 +252,84 @@ class GroundTruthClusterTool:
             while True:
                 self.change_record(self.dataset_id)
 
-        # 2. Pobranie niepodpisanych danych
-        fids, embeddings = self._get_unlabeled_data()
-        print("Dlugosc wektora twarzy: ", len(embeddings[0]))
-
-        if len(fids) == 0:
-            QMessageBox.information(self.ui, "Gotowe", "Wszystkie twarze mają już etykiety.")
-            return
-
-        if len(fids) < self.min_cluster_size:
-            QMessageBox.warning(self.ui, "Brak danych", "Za mało niepodpisanych twarzy by użyć DBSCAN.")
-            return
-
-        print(f"[INFO] Rozpoczynam klastrowanie {len(fids)} twarzy...")
-
-        # 3. Uruchomienie DBSCAN (metoda z FaceClassifier)
-        clusters_dict = self.classifier.get_face_clusters(embeddings, fids)
-
-        # Odfiltrowanie małych klastrów i sortowanie od największych
-        valid_clusters = [cfids for cid, cfids in clusters_dict.items() if len(cfids) >= self.min_cluster_size]
-        print(len(valid_clusters))
-        valid_clusters.sort(key=len, reverse=True)
-
-        if not valid_clusters:
-            QMessageBox.information(self.ui, "Wynik DBSCAN", "Algorytm nie znalazł żadnych wyraźnych grup.")
-            return
-
-        # 4. Przekazanie klastrów do GUI do masowego zatwierdzenia
-        rounds_without_progress = 0
-
-        to_classify = len(fids)
-        for cluster_fids in valid_clusters:
-            print("Liczba twarzy: ", to_classify)
-            # Pobieramy pełne pary (fid, path) by UI mogło wyświetlić obrazki
-            cluster_data = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset_id)
-
-            # Wywołanie Bulk UI
-            selected_fids, label_name = self.ui.bulk_verify_faces(cluster_data)
-
-            # Obsługa przycisku "Anuluj" lub zamknięcia okna
-            if selected_fids is None and label_name is None:
-                print("[INFO] Przerwano etykietowanie na żądanie użytkownika.")
-                break
-
-            # Jeśli użytkownik coś podpisał
-            if selected_fids and label_name:
-                written = self._assign_label(selected_fids, label_name)
-                to_classify  -= written
-                if written > 0:
-                    rounds_without_progress = 0
-                else:
-                    rounds_without_progress += 1
-            else:
-                rounds_without_progress += 1
-
-            if rounds_without_progress >= 3:
+        elif self.mode == "copy dataset":
+            src_dataset = self.ui.ask_for_scan_dataset_id("Wybór zestawu danych", "Wybierz zestaw źródłowy:")
+            dst_dataset = self.ui.ask_for_scan_dataset_id("Wybór zestawu danych", "Wybierz zestaw docelowy:")
+            if src_dataset == dst_dataset:
                 QMessageBox.warning(
                     self.ui,
-                    "Brak postępu",
-                    "Pominięto kilka grup z rzędu. Przerywam automatyczne podpowiadanie."
+                    "Niepoprawny wybor",
+                    "Dataset zrodlowy i docelowy musza byc rozne.",
                 )
-                break
+                return
+            self.copy_dataset(src_dataset, dst_dataset)
+            return
 
-        print("[INFO] Zakończono sesję etykietowania.")
-        QMessageBox.information(self.ui, "Koniec", "Sesja klastrowania i podpisywania zakończona.")
+        else:
+            # 2. Pobranie niepodpisanych danych
+            fids, embeddings = self._get_unlabeled_data()
+            print("Dlugosc wektora twarzy: ", len(embeddings[0]))
+
+            if len(fids) == 0:
+                QMessageBox.information(self.ui, "Gotowe", "Wszystkie twarze mają już etykiety.")
+                return
+
+            if len(fids) < self.min_cluster_size:
+                QMessageBox.warning(self.ui, "Brak danych", "Za mało niepodpisanych twarzy by użyć DBSCAN.")
+                return
+
+            print(f"[INFO] Rozpoczynam klastrowanie {len(fids)} twarzy...")
+
+            # 3. Uruchomienie DBSCAN (metoda z FaceClassifier)
+            clusters_dict = self.classifier.get_face_clusters(embeddings, fids)
+
+            # Odfiltrowanie małych klastrów i sortowanie od największych
+            valid_clusters = [cfids for cid, cfids in clusters_dict.items() if len(cfids) >= self.min_cluster_size]
+            print(len(valid_clusters))
+            valid_clusters.sort(key=len, reverse=True)
+
+            if not valid_clusters:
+                QMessageBox.information(self.ui, "Wynik DBSCAN", "Algorytm nie znalazł żadnych wyraźnych grup.")
+                return
+
+            # 4. Przekazanie klastrów do GUI do masowego zatwierdzenia
+            rounds_without_progress = 0
+
+            to_classify = len(fids)
+            for cluster_fids in valid_clusters:
+                print("Liczba twarzy: ", to_classify)
+                # Pobieramy pełne pary (fid, path) by UI mogło wyświetlić obrazki
+                cluster_data = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset_id)
+
+                # Wywołanie Bulk UI
+                selected_fids, label_name = self.ui.bulk_verify_faces(cluster_data)
+
+                # Obsługa przycisku "Anuluj" lub zamknięcia okna
+                if selected_fids is None and label_name is None:
+                    print("[INFO] Przerwano etykietowanie na żądanie użytkownika.")
+                    break
+
+                # Jeśli użytkownik coś podpisał
+                if selected_fids and label_name:
+                    written = self._assign_label(selected_fids, label_name)
+                    to_classify  -= written
+                    if written > 0:
+                        rounds_without_progress = 0
+                    else:
+                        rounds_without_progress += 1
+                else:
+                    rounds_without_progress += 1
+
+                if rounds_without_progress >= 3:
+                    QMessageBox.warning(
+                        self.ui,
+                        "Brak postępu",
+                        "Pominięto kilka grup z rzędu. Przerywam automatyczne podpowiadanie."
+                    )
+                    break
+
+            print("[INFO] Zakończono sesję etykietowania.")
+            QMessageBox.information(self.ui, "Koniec", "Sesja klastrowania i podpisywania zakończona.")
 
 
 
