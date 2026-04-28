@@ -1,15 +1,17 @@
-"""GUI tool for DBSCAN-assisted ground-truth labeling of extracted faces."""
+﻿"""GUI tool for DBSCAN-assisted ground-truth labeling of extracted faces."""
 
 from __future__ import annotations
 
-from ml_engine import FaceExtractor, FaceClassifier
+from ml_engine import FaceExtractor, FaceClassifier, FacePreprocessor
 
 import os
 import re
 import shutil
 import numpy as np
-from collections import deque
-from PyQt5.QtWidgets import QApplication, QMessageBox, QInputDialog
+from PyQt5.QtWidgets import QApplication, QMessageBox, QInputDialog, QDialog, QVBoxLayout, QLineEdit, QLabel, QCheckBox, \
+    QFrame, QScrollArea, QWidget, QGridLayout, QPushButton
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap
 from tqdm import tqdm
 
 from config import Config
@@ -25,26 +27,20 @@ class GroundTruthClusterTool:
         self.config = config
         self.db = db
         self.ui = FaceInterface()
+        self.preprocessor = None
         self.classifier = FaceClassifier()
 
         self.min_cluster_size = min_cluster_size
         self._label_next_index: dict[str, int] = {}
-        self.dataset_id: int = 1
         self.mode = "labeling"
+        self.preprocessing_type = "hog"
+        self.dataset_id: int = 1
 
     def _setup_session_via_gui(self) -> bool:
         """Prompt user for dataset ID and preprocessing options via UI."""
-        # 1. Wybór Datasetu
-        items = ["1", "2", "3"]
-        item, ok = QInputDialog.getItem(
-            self.ui, "Wybór Datasetu", "Na którym zestawie danych chcesz pracować?", items, 0, False
-        )
-        if not ok:
-            return False
-        self.dataset_id = int(item)
 
-        # 2 tryb
-        items = ["labeling", "change record", "delete record", "copy dataset"]
+        #wybor trybu
+        items = ["labeling", "change record", "delete record", "copy dataset", "recalculate face vectors"]
         item, ok = QInputDialog.getItem(
             self.ui, "Wybor trybu", "Wybierz tryb: ", items, 0, False
         )
@@ -52,21 +48,34 @@ class GroundTruthClusterTool:
             return False
         self.mode = item
 
+        # w przypadku kopiowanie wybor datasetu nie konieczny
+        if self.mode == "copy dataset":
+            return True
+
+        # WybĂłr Datasetu
+        items = ["1", "2", "3"]
+        item, ok = QInputDialog.getItem(
+            self.ui, "Wybor Datasetu", "Na ktorym zestawie danych chcesz pracowal?", items, 0, False
+        )
+        if not ok:
+            return False
+        self.dataset_id = int(item)
+
+
         # omitting next questions and pop-ups
-        if self.mode == "change record" or self.mode == "copy dataset":
+        if self.mode == "change record"  or self.mode == "delete record":
             return True
 
         # 3. Pytanie o Recompute Embeddings
         reply = QMessageBox.question(
             self.ui,
             "Przygotowanie danych",
-            "Czy chcesz ponownie przeliczyć embeddingi (HOG + PCA) przed startem klastrowania?",
+            "Czy chcesz ponownie przeliczyc embeddingi przed startem klastrowania?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
 
         if reply == QMessageBox.Yes:
-            extractor = FaceExtractor(self.config, self.db, dataset_id=self.dataset_id)
-            extractor.compute_embedding_from_crop()
+            self.preprocessing_type = self.ui.ask_for_preprocessing_type(self.dataset_id)
 
         return True
 
@@ -120,27 +129,26 @@ class GroundTruthClusterTool:
         old_face_path = os.path.join(self.config.FACES_DIR, f"{old_face_id}.jpg")
 
         if not os.path.exists(old_face_path):
-            print(f"[ERROR] Plik źródłowy nie istnieje: {old_face_path}. Pomijam aktualizację DB.")
-            return  # NIE aktualizujemy bazy, jeśli nie ma pliku!
+            print(f"[ERROR] Plik zrodlowy nie istnieje: {old_face_path}. Pomijam aktualizacje DB.")
+            return  # NIE aktualizujemy bazy, jeĹ›li nie ma pliku!
 
         try:
             shutil.move(old_face_path, new_face_path)
         except Exception as e:
-            print(f"[ERROR] Błąd shutil.move: {e}")
+            print(f"[ERROR] Blad shutil.move: {e}")
             return
 
-            # 2. Jeśli dysk się udał, aktualizujemy BAZĘ (w tym image_path!)
         self.db._cursor.execute(
             """UPDATE faces
                SET face_id            = ?,
                    image_path         = ?,
                    ground_truth_label = ?,
                    is_test            = 0
-               WHERE face_id = ?
-                 AND dataset_id = ?""",
+               WHERE face_id = ? AND dataset_id = ?""",
             (new_face_id, new_face_path, safe_label, old_face_id, self.dataset_id)
         )
         self.db._conn.commit()
+
 
     def _get_unlabeled_data(self) -> tuple[list[str], np.ndarray]:
         """Fetch all unlabeled faces and return strictly typed IDs and Embeddings."""
@@ -150,7 +158,7 @@ class GroundTruthClusterTool:
             return [], np.array([])
 
         fids = [row[0] for row in rows]
-        # Bezpieczne rzutowanie list na macierz float32 wymaganą przez Scikit-Learn
+        # Bezpieczne rzutowanie list na macierz float32 wymaganÄ… przez Scikit-Learn
         embs = np.array([row[1] for row in rows], dtype=np.float32)
         return fids, embs
 
@@ -168,7 +176,7 @@ class GroundTruthClusterTool:
             self._rename_face_and_sync(fid, safe_label)
             written += 1
 
-            # Odświeżanie GUI co kilka iteracji lub na końcu
+            # Odswiezanie GUI co kilka iteracji lub na koncu
             if idx % 5 == 0 or idx == total:
                 self.ui.update_progress(idx, total, f"Zapisywanie: {clean_label}", )
                 QApplication.processEvents()
@@ -180,6 +188,28 @@ class GroundTruthClusterTool:
         if src_dataset == dst_dataset:
             print("Chciano skopiowac z tego samego datasetu do tego samego. Zamykam program")
             return False
+
+        new_faces_dir = self.config.FACES_DIR + '_' + str(dst_dataset)
+
+        #czyszczenie zbiory dst
+        print(f"Czyszczenie folderu: {new_faces_dir}")
+        try:
+            # Usuwamy całą zawartość folderu (pliki), ale zostawiamy sam folder
+            for filename in os.listdir(new_faces_dir):
+                file_path = os.path.join(new_faces_dir, filename)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+        except Exception as e:
+            print(f"[BŁĄD] Nie udało się wyczyścić plików: {e}")
+        if not os.path.exists(new_faces_dir):
+            print("Niepoprawna sciezka do katalogu z twarzami. Zamykam program")
+            print(new_faces_dir)
+            exit(0)
+
+        print(f"[INFO] Usuwanie starych rekordów z datasetu {dst_dataset}...")
+        self.db._cursor.execute("DELETE FROM faces WHERE dataset_id = ?", (dst_dataset,))
+        self.db._conn.commit()
+
         read_cursor = self.db._conn.cursor()
         offset = 0
         batch = 50
@@ -195,24 +225,143 @@ class GroundTruthClusterTool:
             if not rows:
                 break
             for fid, orig_image, img_path, bbox, emb,ground_truth in tqdm(rows, "Kopiowanie"):
+                new_img_path = img_path  # Domyślnie stara ścieżka
+
+                if img_path and os.path.exists(img_path):
+                    file_name = os.path.basename(img_path)
+                    new_img_path = os.path.abspath(os.path.join(new_faces_dir, file_name))
+
+                    # Jeśli plik w nowym miejscu jeszcze nie istnieje - kopiuje
+                    if not os.path.exists(new_img_path):
+                        shutil.copy2(img_path, new_img_path)
 
                 self.db._cursor.execute("""INSERT OR IGNORE INTO faces (face_id,  dataset_id, original_image, image_path, bbox,
                                                       embedding, manual_label, svm_prediction , ground_truth_label, is_test)
                                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                (fid, dst_dataset, orig_image, img_path, bbox, emb, None, None, ground_truth, 0))
+                                (fid, dst_dataset, orig_image, new_img_path, bbox, emb, None, None, ground_truth, 0))
             offset += batch
         self.db._conn.commit()
         return True
 
+    def delete_records(self, dataset: int):
+        """Enables deleting particular records from the database."""
+        read_cursor = self.db._conn.cursor()
+        batch = 50
+        last_face_id = None # last face id from the previous batch
+
+        while True:
+            if last_face_id is None:
+                read_cursor.execute(
+                    """SELECT face_id, dataset_id, image_path
+                       FROM faces
+                       WHERE dataset_id = ? AND ground_truth_label != 'None'
+                       ORDER BY face_id LIMIT ?""",
+                    (dataset, batch)
+                )
+            else:
+                read_cursor.execute(
+                    """SELECT face_id, dataset_id, image_path
+                       FROM faces
+                       WHERE dataset_id = ? AND ground_truth_label != 'None' AND face_id > ?
+                       ORDER BY face_id LIMIT ?""",
+                    (dataset, last_face_id, batch)
+                )
+            rows = read_cursor.fetchall()
+            if not rows:
+                break
+
+            dialog = QDialog(self.ui)
+            dialog.setWindowTitle("Usuwanie rekordow")
+            dialog.setMinimumSize(900, 700)
+            dialog_layout = QVBoxLayout(dialog)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            grid_widget = QWidget()
+            inner_grid = QGridLayout(grid_widget)
+
+            check_boxes = {}
+            for i, row in enumerate(rows):
+                fid, _, face_path = row
+
+                container = QVBoxLayout()
+                img_label = QLabel()
+                pixmap = QPixmap(face_path)
+                if not pixmap.isNull():
+                    img_label.setPixmap(pixmap.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+                chk = QCheckBox("Usun ta osobe")
+                chk.setChecked(False)
+
+                container.addWidget(img_label, alignment=Qt.AlignCenter)
+                container.addWidget(chk, alignment=Qt.AlignCenter)
+
+                frame = QFrame()
+                frame.setStyleSheet("background-color: #3d3d3d; border-radius: 5px;")
+                frame.setLayout(container)
+                inner_grid.addWidget(frame, i // 4, i % 4)
+                check_boxes[fid] = chk
+
+            scroll.setWidget(grid_widget)
+            dialog_layout.addWidget(scroll)
+
+            btn_commit_continue = QPushButton("Usun zaznaczone (commit) i dalej")
+            btn_commit_continue.setEnabled(True)
+            btn_commit_continue.setStyleSheet(
+                """
+                QPushButton:disabled { background-color: #444; color: #888; }
+                QPushButton:enabled { background-color: #28a745; color: white; font-weight: bold; }
+                height: 40px;
+                """
+            )
+            btn_commit_stop = QPushButton("Usun zaznaczone (commit) i zakoncz")
+            btn_cancel = QPushButton("Anuluj")
+
+            action = {"type": "cancel"}
+
+            def _commit_continue():
+                action["type"] = "continue"
+                dialog.accept()
+
+            def _commit_stop():
+                action["type"] = "stop"
+                dialog.accept()
+
+            btn_commit_continue.clicked.connect(_commit_continue)
+            btn_commit_stop.clicked.connect(_commit_stop)
+            btn_cancel.clicked.connect(dialog.reject)
+
+            dialog_layout.addWidget(btn_commit_continue)
+            dialog_layout.addWidget(btn_commit_stop)
+            dialog_layout.addWidget(btn_cancel)
+
+            if dialog.exec_() != QDialog.Accepted:
+                break
+
+            records_to_be_deleted = [fid for fid, cb in check_boxes.items() if cb.isChecked()]
+            for fid in records_to_be_deleted:
+                print("Usuwanie rekordu: ", fid, " z datasetu ", dataset)
+                self.db._cursor.execute(
+                    """DELETE FROM faces WHERE face_id = ? AND dataset_id = ?""",
+                    (fid, dataset)
+                )
+            self.db._conn.commit()
+
+            # Keyset pagination avoids OFFSET shifts after deletes.
+            last_face_id = rows[-1][0]
+
+            if action["type"] == "stop":
+                break
+
     def change_record(self, dataset: int = 1):
         old_img_path, ok = QInputDialog.getText(
             None,
-            "Podaj ścieżkę",
-            "Wklej ścieżkę do pliku z twarzą (zamknij okno by zakonczyc):"
+            "Podaj sciezke™",
+            "Wklej sciezke do pliku z twarza (zamknij okno by zakonczyc):"
         )
 
         if ok and old_img_path:
-            print("Podana ścieżka:", old_img_path)
+            print("Podana sciezke:", old_img_path)
 
         else:
             print("Anulowano lub brak danych")
@@ -225,8 +374,8 @@ class GroundTruthClusterTool:
 
         new_label, ok = QInputDialog.getText(
             None,
-            "Podaj nowa etykietę",
-            "Wklej nową etykietę:"
+            "Podaj nowa etykiete",
+            "Wklej nowa etykiete:"
         )
 
         if ok and new_label:
@@ -243,18 +392,21 @@ class GroundTruthClusterTool:
         """Main workflow for clustering and batch labeling."""
         print("[INFO] Start etykietowania ground truth przez DBSCAN + GUI.")
 
-        # 1. Konfiguracja początkowa przez GUI
+        # 1. Konfiguracja poczatkowa przez GUI
         if not self._setup_session_via_gui():
-            print("[INFO] Operacja przerwana przez użytkownika.")
+            print("[INFO] Operacja przerwana przez uzytkownika.")
             return
 
+        print("Dataset domyslny: ", self.dataset_id)
         if self.mode == "change record":
             while True:
                 self.change_record(self.dataset_id)
 
         elif self.mode == "copy dataset":
-            src_dataset = self.ui.ask_for_scan_dataset_id("Wybór zestawu danych", "Wybierz zestaw źródłowy:")
-            dst_dataset = self.ui.ask_for_scan_dataset_id("Wybór zestawu danych", "Wybierz zestaw docelowy:")
+            src_dataset = self.ui.ask_for_scan_dataset_id("Wybor zestawu danych", "Wybierz zestaw zrodlowy:")
+            print("Dataset zrodlowy: ", src_dataset)
+            dst_dataset = self.ui.ask_for_scan_dataset_id("Wybor zestawu danych", "Wybierz zestaw docelowy:")
+            print("Dataset docelowy: ", dst_dataset)
             if src_dataset == dst_dataset:
                 QMessageBox.warning(
                     self.ui,
@@ -265,17 +417,24 @@ class GroundTruthClusterTool:
             self.copy_dataset(src_dataset, dst_dataset)
             return
 
+        elif self.mode == "delete record":
+            self.delete_records(self.dataset_id)
+
+        elif self.mode == "recalculate face vectors":
+            self.preprocessor = FacePreprocessor(dataset_id=self.dataset_id, db=self.db, cf=self.config)
+            self.preprocessor.compute_embedding_from_crop(self.preprocessing_type)
+
         else:
             # 2. Pobranie niepodpisanych danych
             fids, embeddings = self._get_unlabeled_data()
-            print("Dlugosc wektora twarzy: ", len(embeddings[0]))
+            print("Dlugosc wektora twarzy: ", len(embeddings))
 
             if len(fids) == 0:
-                QMessageBox.information(self.ui, "Gotowe", "Wszystkie twarze mają już etykiety.")
+                QMessageBox.information(self.ui, "Gotowe", "Wszystkie twarze maja juz etykiety.")
                 return
 
             if len(fids) < self.min_cluster_size:
-                QMessageBox.warning(self.ui, "Brak danych", "Za mało niepodpisanych twarzy by użyć DBSCAN.")
+                QMessageBox.warning(self.ui, "Brak danych", "Za malo niepodpisanych twarzy by uzyc DBSCAN.")
                 return
 
             print(f"[INFO] Rozpoczynam klastrowanie {len(fids)} twarzy...")
@@ -283,33 +442,33 @@ class GroundTruthClusterTool:
             # 3. Uruchomienie DBSCAN (metoda z FaceClassifier)
             clusters_dict = self.classifier.get_face_clusters(embeddings, fids)
 
-            # Odfiltrowanie małych klastrów i sortowanie od największych
+            # Odfiltrowanie malych klastrow i sortowanie od najwiekszych
             valid_clusters = [cfids for cid, cfids in clusters_dict.items() if len(cfids) >= self.min_cluster_size]
             print(len(valid_clusters))
             valid_clusters.sort(key=len, reverse=True)
 
             if not valid_clusters:
-                QMessageBox.information(self.ui, "Wynik DBSCAN", "Algorytm nie znalazł żadnych wyraźnych grup.")
+                QMessageBox.information(self.ui, "Wynik DBSCAN", "Algorytm nie znalazl zadnych wyraznych grup.")
                 return
 
-            # 4. Przekazanie klastrów do GUI do masowego zatwierdzenia
+            # 4. Przekazanie klastrow do GUI do masowego zatwierdzenia
             rounds_without_progress = 0
 
             to_classify = len(fids)
             for cluster_fids in valid_clusters:
                 print("Liczba twarzy: ", to_classify)
-                # Pobieramy pełne pary (fid, path) by UI mogło wyświetlić obrazki
+                # Pobieramy peĹ‚ne pary (fid, path) by UI mogĹ‚o wyĹ›wietliÄ‡ obrazki
                 cluster_data = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset_id)
 
-                # Wywołanie Bulk UI
+                # Wywolanie Bulk UI
                 selected_fids, label_name = self.ui.bulk_verify_faces(cluster_data)
 
-                # Obsługa przycisku "Anuluj" lub zamknięcia okna
+                # ObsĹ‚uga przycisku "Anuluj" lub zamkniÄ™cia okna
                 if selected_fids is None and label_name is None:
-                    print("[INFO] Przerwano etykietowanie na żądanie użytkownika.")
+                    print("[INFO] Przerwano etykietowanie na zadanie uzytkownika.")
                     break
 
-                # Jeśli użytkownik coś podpisał
+                # jesli uzytkownik cos podpisal
                 if selected_fids and label_name:
                     written = self._assign_label(selected_fids, label_name)
                     to_classify  -= written
@@ -323,25 +482,25 @@ class GroundTruthClusterTool:
                 if rounds_without_progress >= 3:
                     QMessageBox.warning(
                         self.ui,
-                        "Brak postępu",
-                        "Pominięto kilka grup z rzędu. Przerywam automatyczne podpowiadanie."
+                        "Brak postepu",
+                        "Pominieto kilka grup z rzedu. Przerywam automatyczne podpowiadanie."
                     )
                     break
 
-            print("[INFO] Zakończono sesję etykietowania.")
-            QMessageBox.information(self.ui, "Koniec", "Sesja klastrowania i podpisywania zakończona.")
-
+            print("[INFO] Zakonczono sesje etykietowania.")
+            QMessageBox.information(self.ui, "Koniec", "Sesja klastrowania i podpisywania zakonczona.")
 
 
 if __name__ == "__main__":
-    # Inicjalizacja zależności przed startem logiki
+    # Inicjalizacja zaleznosci przed startem logiki
     app_config = Config()
     app_db = FaceDatabase(app_config)
 
     tool = GroundTruthClusterTool(config=app_config, db=app_db)
 
+
     try:
         tool.run()
     finally:
-        # Zawsze bezpiecznie zamykamy bazę na końcu pliku głównego
+        # bezpiecznie zamykamy baze na koncu pliku glownego
         app_db.close()

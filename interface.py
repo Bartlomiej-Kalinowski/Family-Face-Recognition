@@ -195,6 +195,23 @@ class FaceInterface(QMainWindow):
             return "use_existing"
         return "cancel"
 
+    def ask_for_preprocessing_type(self, dataset: int = 1):
+        """Ask the user which type of embeddings should be used."""
+        msg = QMessageBox()
+        msg.setWindowTitle("Wybor reprezentacji wektorow twarzy")
+        msg.setText(f"Wybierz sposob przetwarzania zdjęć twarzy w zbiorze danych nr. {dataset}:")
+        hog_embds = msg.addButton("HOG (Podstawowe)", QMessageBox.ActionRole)
+        neural_network_cv2 = msg.addButton("Siec neuronowa (zaawanasowane)", QMessageBox.ActionRole) # neural network + face alignment
+        msg.addButton("Anuluj", QMessageBox.RejectRole)
+
+        msg.exec_()
+
+        if msg.clickedButton() == hog_embds:
+            return "hog"
+        if msg.clickedButton() == neural_network_cv2:
+            return "neural_network"
+        return "cancel"
+
     def ask_for_scan_dataset_id(self, title, comment) -> int:
         msg = QMessageBox()
         msg.setWindowTitle(title)

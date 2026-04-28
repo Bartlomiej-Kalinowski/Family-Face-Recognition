@@ -1,6 +1,6 @@
 ﻿"""Application controller tying together UI, database, and ML workflows."""
 
-from ml_engine import FaceClassifier, FaceExtractor
+from ml_engine import FaceClassifier, FaceExtractor, FacePreprocessor
 
 import hashlib
 import os
@@ -27,12 +27,14 @@ class SmartLabelerController:
         self.config = Config()
         # 1. Tworzymy obiekt bazy danych w całej aplikacji
         self.db = FaceDatabase(self.config)
-        # 2. Przekazujemy ten sam obiekt (referencję) do ekstraktora
-        self.extractor = FaceExtractor(self.config, self.db)
-        self.classifier = FaceClassifier()
+        #GUI initialization
         self.ui = FaceInterface()
-        self.dataset = 1
         self.ui.set_visualize_callback(self._on_generate_visualization_clicked)
+        self.dataset = self.ui.ask_for_scan_dataset_id("Etykietowanie", "Wybierz zestaw danych:")
+        # 2. Przekazujemy ten sam obiekt (referencję) do ekstraktora
+        self.extractor = FaceExtractor(self.config, self.db, self.dataset)
+        self.preprocessor = FacePreprocessor(self.dataset, self.db,  self.config)
+        self.classifier = FaceClassifier()
 
     def _manual_fix_callback(self, face_id: str, new_name: str) -> None:
         """Persist a manual label correction triggered from the UI."""
@@ -123,7 +125,16 @@ class SmartLabelerController:
         self.refresh_main_view()
 
     def preprocessing_phase(self):
-        self.extractor.compute_embedding_from_crop()
+        preprocessing_type = "hog"
+        preprocessing_type = self.ui.ask_for_preprocessing_type()
+        if preprocessing_type == "hog":
+            self.preprocessor.compute_embedding_from_crop("hog")
+        elif preprocessing_type == "neural_network":
+            self.preprocessor.compute_embedding_from_crop("neural_network")
+        else:
+            print("Przerwano dzialanie programu")
+            exit(0)
+
 
 
     def run_clustering_phase(self) -> dict:
@@ -267,7 +278,6 @@ class SmartLabelerController:
 
     def start(self) -> None:
         """Start the application workflow based on the selected scan mode."""
-        self.dataset = self.ui.ask_for_scan_dataset_id("Etykietowanie", "Wybierz zestaw danych:")
         if self.dataset == -1:
             print("Kończę działanie aplikacji...")
             return
@@ -283,6 +293,7 @@ class SmartLabelerController:
 
             if reply == QMessageBox.Yes:
                 self.preprocessing_phase()
+
             self.db.rebuild_db_from_files(dataset=self.dataset)
             self.app_pipeline()
         elif mode == "full":

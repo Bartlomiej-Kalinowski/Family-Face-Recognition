@@ -1,6 +1,9 @@
 ﻿"""Machine-learning components for face extraction, clustering, and classification."""
+import math
 import sys
-
+import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
 from database import FaceDatabase
 
 try:
@@ -21,18 +24,85 @@ from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 from sklearn.preprocessing import Normalizer
 from tqdm import tqdm
-from sklearn.decomposition import PCA, IncrementalPCA
+from sklearn.decomposition import IncrementalPCA
 
 
+class FacePreprocessor:
+    def __init__(self, dataset_id: int, db: FaceDatabase, cf):
+        base_options = mp_python.BaseOptions(model_asset_path=cf.FACE_LANDMARKER_MODEL_PATH)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=1,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+        )
+        self.face_landmarker = vision.FaceLandmarker.create_from_options(options)
 
-class FaceExtractor:
-    """Detect faces with YOLO and compute HOG embeddings for each crop."""
-
-    def __init__(self, config, db: FaceDatabase, dataset_id: int = 1):
-        self.config = config
-        self.detector = YOLO(config.YOLO_MODEL_PATH)
-        self.db = db
+        self.recognizer = None
         self.dataset = dataset_id
+        self.db = db
+        self.config = cf
+
+    def recompute_one_embedding_with_face_alignment(self, image_path: str):
+        """
+        Wczytuje cropa, wyrównuje linię oczu i zwraca nowy embedding.
+        Zwraca None, jeśli wyrównanie się nie powiedzie.
+        """
+
+        img = cv2.imread(image_path)
+        if img is None:
+            print("Brak sciezki do pliku z twarza!")
+            return None
+
+        h, w, _ = img.shape
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # 1. Znalezienie landmarków na cropie
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        result = self.face_landmarker.detect(mp_image)
+
+        if not result.face_landmarks:
+            print("Nie znaleziono landamrkow na twarzy!")
+            return None
+
+        landmarks = result.face_landmarks[0]
+
+        if len(landmarks) > 473:
+            left_idx, right_idx = 468, 473
+        else:
+            left_idx, right_idx = 33, 263  # kąciki oczu
+
+        left_eye_x = int(landmarks[left_idx].x * w)
+        left_eye_y = int(landmarks[left_idx].y * h)
+        right_eye_x = int(landmarks[right_idx].x * w)
+        right_eye_y = int(landmarks[right_idx].y * h)
+
+        # 3. Obliczenie kąta nachylenia linii oczu
+        dy = right_eye_y - left_eye_y
+        dx = right_eye_x - left_eye_x
+        angle = math.degrees(math.atan2(dy, dx))
+
+        # 4. Obrót obrazu względem środka między oczami
+        eyes_center = ((left_eye_x + right_eye_x) // 2, (left_eye_y + right_eye_y) // 2)
+        rotation_matrix = cv2.getRotationMatrix2D(eyes_center, angle, scale=1.0)
+
+        aligned_img = cv2.warpAffine(
+            img,
+            rotation_matrix,
+            (w, h),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REPLICATE  # Klonuje krawędzie, by nie było czarnych dziur
+        )
+
+        # 5. Skalowanie do SFace (112x112) i wyciągnięcie embeddingu
+        aligned_resized = cv2.resize(aligned_img, (112, 112))
+        embedding = self.recognizer.feature(aligned_resized)
+
+        return embedding.flatten().astype(np.float32)
+
+    def close(self):
+        self.face_landmarker.close()
 
     @staticmethod
     def recompute_one_embedding(face_image_path):
@@ -47,26 +117,57 @@ class FaceExtractor:
         img = hog.compute(img).flatten().astype(np.float32)
         return img
 
-    def compute_embedding_from_crop(self):
+
+    def compute_embedding_from_crop(self, type_of_preprocessing):
+        nb_features = None
+        # WERSJA 1: SIEC NEURONOWA
+        if type_of_preprocessing == "neural_network":
+            self.recognizer = cv2.FaceRecognizerSF.create(
+                self.config.FACE_RECOGNIZER_CV_PATH,
+                ""
+            )
+            self.db.clear_embeddings(self.dataset)
+            updated_correctly = 0
+            for face_id, img_path, face_emb in tqdm(self.db.embedding_generator(self.dataset), "Ekstrakcja cech"):
+                print("Before: ", len(face_emb)) if face_emb is not None else None
+                face_emb = self.recompute_one_embedding_with_face_alignment(img_path)
+                print("After: ", len(face_emb))if face_emb is not None else None
+                if face_emb is not None:
+                    # Normalizacja L2 (SFace działa najlepiej na sferze)
+                    face_emb = face_emb / (np.linalg.norm(face_emb) + 1e-7)
+
+                    if self.db.update_emd(face_emb, face_id, dataset=self.dataset):
+                        updated_correctly += 1
+                else:
+                    print(f"[SKIP] Nie udalo sie obliczyc wektora dla: {face_id}. Pomijam aktualizacje i oznaczam jako None.")
+                    self.db.mark_as_none(face_id, dataset=self.dataset)
+                    continue
+            self.db._conn.commit()
+            print(f"\n[DONE] Neural Network update complete. Updated: {updated_correctly}")
+            return  # PCA jest zbędne dla SFace
+
+        #WERSJA 2: hog + PCA
         pca = IncrementalPCA(n_components=150)
         scaler = Normalizer(norm='l2')
-
-        print("--- Preprocessing, part I: Fitting PCA ---",file = sys.stderr,  flush=True)
-        batch_size = 150
-        batch_embs = []
         updated_correctly = 0
         update_errors = 0
-        nb_features = None
-        # 1. Trenowanie PCA paczkami (partial_fit)
+        print("--- Preprocessing, part I: Fitting PCA ---", file=sys.stderr, flush=True)
+        batch_size = 150
+        batch_embs = []
+        self.db.clear_embeddings(self.dataset)
         for face_id, img_path, face_emb in tqdm(self.db.embedding_generator(self.dataset), "Fitting PCA"):
             face_emb = self.recompute_one_embedding(img_path)
+            if face_emb is None:
+                print(f"[SKIP] Nie wykryto twarzy dla ID: {face_id}. Pomijam aktualizacje.")
+                continue  # Nie dodajemy do batcha, nie aktualizujemy bazy, gdy detector nic nie wykryl
             nb_features = face_emb.shape
+            # KROK 1: Zapisuje surowy HOG
             success = self.db.update_emd(face_emb, face_id, dataset=self.dataset)
             if success:
                 updated_correctly += 1
+                batch_embs.append(face_emb)
             else:
                 update_errors += 1
-            batch_embs.append(face_emb)
 
             # Jeśli paczka ma 150 elementów, uczymy model i czyścimy paczkę
             if len(batch_embs) == batch_size:
@@ -77,10 +178,12 @@ class FaceExtractor:
         if len(batch_embs) > 0:
             pca.partial_fit(np.array(batch_embs))
 
-        print("--- Preprocessing, part I: Transforming & Normalizing ---",file = sys.stderr,flush=True)
-        print(f"\nUpdated correctly, part I: {updated_correctly}")
+
         print(f"Errors, part I: {update_errors}")
         print("Emb shape part I: ", nb_features)
+        print(f"\nUpdated correctly, part I: {updated_correctly}")
+
+        print("--- Preprocessing, part II: Transforming & Normalizing ---", file=sys.stderr, flush=True)
         updated_correctly = 0
         update_errors = 0
         nb_features = None
@@ -107,6 +210,15 @@ class FaceExtractor:
         print(f"Updated correctly, part II: {updated_correctly}")
         print(f"Errors, part II: {update_errors}")
         print("Emb shape part II: ", nb_features)
+
+class FaceExtractor:
+    """Detect faces with YOLO and compute HOG embeddings for each crop."""
+
+    def __init__(self, config, db: FaceDatabase, dataset_id: int):
+        self.config = config
+        self.detector = YOLO(config.YOLO_MODEL_PATH)
+        self.db = db
+        self.dataset = dataset_id
 
 
     def extract_face_data(self, image_path: str) -> list:
@@ -170,20 +282,6 @@ class FaceClassifier:
         """Train an One-vs-Rest SVM pipeline with grid search."""
         if len(set(y_train_labels)) < 2:
             return
-
-        # pipe = Pipeline(
-        #     [
-        #         ("pca", PCA(n_components=150)),
-        #         ("clf", OneVsRestClassifier(SVC(kernel="rbf", probability=True, class_weight="balanced"), n_jobs = -1)),
-        #     ]
-        # )
-
-        # param_grid = {
-        #     "clf__estimator__C": [0.1, 1, 10, 100],
-        #     "clf__estimator__gamma": [0.001, 0.01, 0.1, "scale"],
-        # }
-
-        # search = GridSearchCV(pipe, param_grid, cv=3, n_jobs=-1)
 
         from scipy.stats import loguniform
         from sklearn.model_selection import RandomizedSearchCV

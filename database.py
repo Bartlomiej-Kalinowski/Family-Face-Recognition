@@ -64,7 +64,8 @@ class FaceDatabase:
     def save_face(self, orig_image, face_img, face_id, bbox, dataset = 1, embedding=None, is_test=0, ground_truth = None
                   , manual_label=None, svm_prediction=None):
         """Save a cropped face image and its metadata entry."""
-        face_path = os.path.join(self.config.FACES_DIR, f"{face_id}.jpg")
+        new_dir = self.config.FACES_DIR + '_' + str(dataset)
+        face_path = os.path.join(new_dir, f"{face_id}.jpg")
 
         # Persist the crop first so database rows never point to missing files.
         if not cv2.imwrite(face_path, face_img):
@@ -303,14 +304,17 @@ class FaceDatabase:
         while True:
             row = read_cursor.fetchone()
             if row is None:
+                print("Brak danych w bazie!")
                 break
             face_id, image_path, emb_json = row
             if not os.path.exists(image_path):
                 missing_files += 1
                 continue
-            if emb_json:
+            if emb_json is not None:
                 emb = np.array(json.loads(emb_json), dtype=np.float32)
                 yield face_id, image_path, emb
+            else:
+                yield face_id, image_path, None
         print(f"Missing file for {missing_files} paths")
 
 
@@ -340,3 +344,11 @@ class FaceDatabase:
             path = self._cursor.fetchone()[0]
             fids_and_paths[fid] = path
         return fids_and_paths
+
+    def clear_embeddings(self, dataset: int):
+        self._cursor.execute("UPDATE faces SET embedding = NULL WHERE dataset_id = ?", (dataset,))
+        self._conn.commit()
+
+    def mark_as_none(self, fid, dataset: int):
+        self._cursor.execute("UPDATE faces SET ground_truth_label = 'None' WHERE dataset_id = ? AND face_id = ?",
+                             (dataset, fid))

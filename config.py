@@ -9,6 +9,8 @@ class Config:
     """Store global configuration constants used by the application."""
 
     YOLO_MODEL_PATH = r"C:\Users\Kalin\PycharmProjects\LIC\face_detection_model\yolov8n-face.pt"
+    FACE_LANDMARKER_MODEL_PATH = r"C:\Users\Kalin\PycharmProjects\LIC\face_detection_model\face_landmarker.task"
+    FACE_RECOGNIZER_CV_PATH = r"C:\Users\Kalin\PycharmProjects\LIC\face_detection_model\face_recognition_sface_2021dec.onnx"
 
     BASE_DIR = Path(__file__).resolve().parent
     OUTPUT_DIR = str(BASE_DIR / "output_data")
@@ -16,6 +18,8 @@ class Config:
 
     ANNOTATED_FACES_DIR = os.path.join(OUTPUT_DIR, "annotated_faces")
     FACES_DIR = os.path.join(OUTPUT_DIR, "extracted_faces")
+    FACES_DIR_2 = os.path.join(OUTPUT_DIR, "extracted_faces_2")
+    FACES_DIR_3 = os.path.join(OUTPUT_DIR, "extracted_faces_3")
     DB_PATH = os.path.join(OUTPUT_DIR, "face_metadata.db")
 
     FACE_SIZE = (128, 128)
@@ -35,7 +39,7 @@ class Config:
             cls.SOURCE_DIR,
             cls.OUTPUT_DIR,
             cls.ANNOTATED_FACES_DIR,
-            cls.FACES_DIR,
+            cls.FACES_DIR, cls.FACES_DIR_2, cls.FACES_DIR_3,
             os.path.dirname(cls.DB_PATH),
         ]
         for folder in required_dirs:
