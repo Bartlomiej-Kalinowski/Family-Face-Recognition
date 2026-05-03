@@ -1,6 +1,6 @@
 ﻿"""Application controller tying together UI, database, and ML workflows."""
 
-from ml_engine import FaceClassifier, FaceExtractor, FacePreprocessor
+from ml_engine import FaceClassifier, FaceExtractor, FacePreprocessor, SVMClassifier, KNNclassifier
 
 import hashlib
 import os
@@ -174,27 +174,38 @@ class SmartLabelerController:
             print("Too less train different labels (min. 2 required), to start SVM prediction!")
         return {"ready_for_training": ready_for_training, "labeled_count": labeled_count}
 
-    def run_classification_phase(self):
+    def run_classification_phase(self, train_data=None):
         """Train the SVM pipeline and return train samples for evaluation."""
         print("\n[SYSTEM] Starting train phase...")
-
-        self.db.mark_unlabeled_as_test(dataset=self.dataset) # unlabeled data as test data
-
-        train_data = self.db.get_labeled_data_for_train(dataset=self.dataset)
-        if not train_data:
-            print("[BŁĄD] Brak danych treningowych w bazie.")
-            return None
 
         unique_labels = set(label for _, label, _ in train_data)
         if len(unique_labels) < 2:
             print(f"[BŁĄD] Zbyt mało osób ({len(unique_labels)}). Potrzeba min. 2 do SVM.")
             return None
 
-        _, train_labels, train_embs = zip(*train_data)
-        self.classifier.train_one_vs_rest_svm(list(train_embs), list(train_labels))
-        return train_data
+        classifier = self.ui.ask_for_classifier(self.dataset)
+        if classifier == "svm":
+            return self.classification_with_svm(train_data)
+        elif classifier == "k_nearest_neighbors":
+            return self.classification_with_knn(train_data)
+        elif classifier == "VGG_face":
+            return None
+        else:
+            print("Przerwano dzialanie programu")
+            exit(0)
 
-    def run_evaluation_phase(self, train_data):
+    def classification_with_svm(self, train_data):
+        _, train_labels, train_embs = zip(*train_data)
+        svm_classifier = SVMClassifier()
+        svm_classifier.train_one_vs_rest_svm(list(train_embs), list(train_labels))
+        return svm_classifier
+
+    def classification_with_knn(self, train_data):
+        _, train_labels, train_embs = zip(*train_data)
+        knn_classifier = KNNclassifier(train_embs, list(train_labels))
+        return knn_classifier
+
+    def run_evaluation_phase(self, train_data, classifier):
         """Run predictions for test data, log metrics, and refresh UI with results."""
         test_data = self.db.get_unlabeled_test_data(dataset=self.dataset)
 
@@ -204,7 +215,7 @@ class SmartLabelerController:
 
         fids, paths, test_embs, _ = zip(*test_data)
 
-        y_pred, confidences = self.classifier.predict_unlabeled(list(test_embs))
+        y_pred, confidences = classifier.predict_unlabeled(np.asarray(test_embs))
         if len(y_pred) == 0:
             print("[BŁĄD] Model nie zwrócił predykcji.")
             return False
@@ -232,7 +243,8 @@ class SmartLabelerController:
         print(report)
 
         # Keep confidence scores available for future thresholding logic.
-        _ = confidences
+        if confidences is not None:
+            _ = confidences
 
         for fid, pred in zip(fids, y_pred):
             self.db.set_svm_prediction(fid, pred, dataset=self.dataset)
@@ -257,12 +269,17 @@ class SmartLabelerController:
         print(f"Have {clustering_result['labeled_count']} people labeled by user. Starting SVM prediction...")
 
         #-------------classification-train phase------------------------------
-        train_data = self.run_classification_phase()
+
+        self.db.mark_unlabeled_as_test(dataset=self.dataset) # unlabeled data as test data
+
+        train_data = self.db.get_labeled_data_for_train(dataset=self.dataset)
         if not train_data:
-            return
+            print("[BŁĄD] Brak danych treningowych w bazie.")
+            return None
+        classifier = self.run_classification_phase(train_data)
 
         # ------------evaluation phase - test --------------------------------
-        self.run_evaluation_phase(train_data)
+        self.run_evaluation_phase(train_data,classifier=classifier)
 
     def _on_generate_visualization_clicked(self) -> None:
         """Generate annotated images after optional manual corrections in the grid."""

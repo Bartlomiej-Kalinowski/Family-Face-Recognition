@@ -25,6 +25,7 @@ from sklearn.svm import SVC
 from sklearn.preprocessing import Normalizer
 from tqdm import tqdm
 from sklearn.decomposition import IncrementalPCA
+from sklearn.neighbors import BallTree
 
 
 class FacePreprocessor:
@@ -259,7 +260,7 @@ class FaceClassifier:
 
     def __init__(self):
         """Initialize classifier state."""
-        self.svm_model = None
+        self.model = None
         self.is_trained = False
 
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
@@ -278,6 +279,9 @@ class FaceClassifier:
             clusters[label].append(fid)
         return clusters
 
+
+class SVMClassifier(FaceClassifier):
+    """SVM classifier for face classification."""
     def train_one_vs_rest_svm(self, x_train: list, y_train_labels: list) -> None:
         """Train an One-vs-Rest SVM pipeline with grid search."""
         if len(set(y_train_labels)) < 2:
@@ -306,18 +310,70 @@ class FaceClassifier:
 
         search.fit(np.array(x_train), y_train_labels)
 
-        self.svm_model = search.best_estimator_
+        self.model = search.best_estimator_
         self.is_trained = True
 
         print(f"Best parameters (OvR): {search.best_params_}")
         print(f"Best cross-validation score: {search.best_score_:.2%}")
 
-    def predict_unlabeled(self, x_test: list) -> tuple:
+    def predict_unlabeled(self, x_test: np.ndarray) -> tuple:
         """Predict labels and confidence scores for unlabeled embeddings."""
         if not self.is_trained:
             return [], []
 
-        predictions = self.svm_model.predict(x_test)
-        probabilities = np.max(self.svm_model.predict_proba(x_test), axis=1)
+        predictions = self.model.predict(x_test)
+        probabilities = np.max(self.model.predict_proba(x_test), axis=1)
 
         return predictions, probabilities
+
+class KNNclassifier(FaceClassifier):
+    """KNN classifier for face classification."""
+
+    def __init__(self, x_train: np.ndarray, y_train: list[str], distance_threshold: float = 0.6):
+        """
+        x_train: Macierz embeddingów wygenerowana i zatwierdzona z DBSCAN.
+        y_train: Lista etykiet odpowiadająca wierszom w x_train (np. ["Jan", "Jan", "Anna", ...]).
+        distance_threshold: Maksymalna odległość euklidesowa. Powyżej tego progu twarz to "Nieznany".
+        """
+        self.y_train = np.array(y_train)
+        self.threshold = distance_threshold
+        self.k = 3
+
+        # Budujemy drzewo tylko raz na zatwierdzonych danych
+        print("[INFO] Budowanie BallTree...")
+        self.kdt = BallTree(x_train, leaf_size=30, metric='euclidean')
+
+    def predict_unlabeled(self, x_test: np.ndarray) -> list[str]:
+        """
+        Klasyfikuje nowe wektory twarzy na podstawie k najbliższych sąsiadów.
+        """
+        from collections import Counter
+        # Szukamy k-sąsiadów.
+        distances, indices = self.kdt.query(x_test, k=self.k, return_distance=True)
+        predictions = []
+
+        for i in range(len(x_test)):
+            dist_i = distances[i]
+            ind_i = indices[i]
+            valid_neighbors_labels = []
+
+            for j in range(self.k):
+                current_dist = dist_i[j]
+                current_idx = ind_i[j]
+                if current_dist <= self.threshold:
+                    valid_neighbors_labels.append(self.y_train[current_idx])
+
+            if len(valid_neighbors_labels) == 0:
+                predictions.append("Nieznana osoba")
+            else:
+                # Głosowanie większościowe tylko wśród "bliskich" sąsiadów
+                counts = Counter(valid_neighbors_labels)
+                most_common_label = counts.most_common(1)[0][0]
+                predictions.append(most_common_label)
+
+        return predictions, None
+
+
+
+
+

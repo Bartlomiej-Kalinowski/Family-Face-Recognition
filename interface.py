@@ -212,6 +212,26 @@ class FaceInterface(QMainWindow):
             return "neural_network"
         return "cancel"
 
+    def ask_for_classifier(self, dataset: int):
+        """Ask the user which type of embeddings should be used."""
+        msg = QMessageBox()
+        msg.setWindowTitle("Wybor klasyfikatora")
+        msg.setText(f"Wybierz sposob klasyfikacji zdjęć twarzy")
+        basic = msg.addButton("Podstawowy (K-najbliższych sąsiadów)", QMessageBox.ActionRole)
+        medium = msg.addButton("Średni (SVM)", QMessageBox.ActionRole)
+        advanced = msg.addButton("Siec neuronowa (sieć VGG-face)", QMessageBox.ActionRole) # neural network + face alignment
+        msg.addButton("Anuluj", QMessageBox.RejectRole)
+
+        msg.exec_()
+
+        if msg.clickedButton() == basic:
+            return "k_nearest_neighbors"
+        if msg.clickedButton() == medium:
+            return "svm"
+        if msg.clickedButton() == advanced:
+            return "VGG_face"
+        return "cancel"
+
     def ask_for_scan_dataset_id(self, title, comment) -> int:
         msg = QMessageBox()
         msg.setWindowTitle(title)

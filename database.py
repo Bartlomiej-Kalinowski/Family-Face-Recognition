@@ -191,7 +191,7 @@ class FaceDatabase:
                    image_path,
                    bbox
             FROM faces
-            WHERE dataset_id = ? AND manual_label IS NOT NULL OR svm_prediction IS NOT NULL
+            WHERE dataset_id = ? AND (manual_label IS NOT NULL OR svm_prediction IS NOT NULL)
             """, (dataset, )
         )
         return self._cursor.fetchall()
