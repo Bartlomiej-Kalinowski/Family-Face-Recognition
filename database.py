@@ -181,6 +181,40 @@ class FaceDatabase:
         rows = self._cursor.fetchall()
         return [(fid, label, np.array(json.loads(emb)).astype(float)) for fid, label, emb in rows]
 
+    def get_vgg_style_labeled_data_for_train(self, dataset: int = 1, is_test = 0) -> list:
+        """Return training entries with manual labels."""
+        self._cursor.execute(
+            """
+            SELECT face_id, manual_label, image_path
+            FROM faces
+            WHERE dataset_id = ?
+              AND is_test = ?
+              AND ground_truth_label != 'None'
+            """, (dataset,is_test)
+        )
+        rows = self._cursor.fetchall()
+        data = []
+        for fid, label, path in rows:
+            img = cv2.imread(path)
+            if img is None:
+                print(f"Brak sciezki do pliku z twarza: {path}")
+                continue
+
+            # 1. BGR do RGB
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            # 2. Zmiana rozmiaru
+            resized_image = cv2.resize(img_rgb, (224, 224))
+
+            # 3. Zmiana układu osi (H, W, C) na (C, H, W) i skalowanie z 0-255 na 0.0-1.0
+            pytorch_image = np.transpose(resized_image, (2, 0, 1)) / 255.0
+
+            data.append((fid, label, pytorch_image, path))
+
+        return data
+
+
+
     def get_all_labeled_faces(self, dataset: int = 1) -> list:
         """Return all labeled faces with manual labels preferred over model labels."""
         self._cursor.execute(

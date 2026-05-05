@@ -1,6 +1,6 @@
 ﻿"""Application controller tying together UI, database, and ML workflows."""
 
-from ml_engine import FaceClassifier, FaceExtractor, FacePreprocessor, SVMClassifier, KNNclassifier
+from ml_engine import FaceClusterer, FaceExtractor, FacePreprocessor, SVMClassifier, KNNclassifier, VGGClassifier
 
 import hashlib
 import os
@@ -34,7 +34,7 @@ class SmartLabelerController:
         # 2. Przekazujemy ten sam obiekt (referencję) do ekstraktora
         self.extractor = FaceExtractor(self.config, self.db, self.dataset)
         self.preprocessor = FacePreprocessor(self.dataset, self.db,  self.config)
-        self.classifier = FaceClassifier()
+        self.classifier = FaceClusterer()
 
     def _manual_fix_callback(self, face_id: str, new_name: str) -> None:
         """Persist a manual label correction triggered from the UI."""
@@ -125,21 +125,27 @@ class SmartLabelerController:
         self.refresh_main_view()
 
     def preprocessing_phase(self):
-        preprocessing_type = "hog"
-        preprocessing_type = self.ui.ask_for_preprocessing_type()
-        if preprocessing_type == "hog":
-            self.preprocessor.compute_embedding_from_crop("hog")
-        elif preprocessing_type == "neural_network":
-            self.preprocessor.compute_embedding_from_crop("neural_network")
-        else:
-            print("Przerwano dzialanie programu")
-            exit(0)
+        # preprocessing_type = "hog"
+        # preprocessing_type = self.ui.ask_for_preprocessing_type()
+        # if preprocessing_type == "hog":
+        #     self.preprocessor.compute_embedding_from_crop()
+        # elif preprocessing_type == "neural_network":
+        #     self.preprocessor.compute_embedding_from_crop()
+        # else:
+        #     print("Przerwano dzialanie programu")
+        #     exit(0)
+        self.preprocessor.compute_embedding_from_crop()
 
 
 
     def run_clustering_phase(self) -> dict:
         """Run DBSCAN clustering and return whether training can continue."""
         unlabeled_data = self.db.get_all_embeddings_without_ground_truth(dataset=self.dataset)
+
+        # wybor jedynie czesci zbioru do trainsowania, ale nie wszystkie
+        import random
+        unlabeled_data = random.sample(unlabeled_data, int(0.8 * len(unlabeled_data)))
+
         print("Number of unlabeled faces in database -- test:\t", len(unlabeled_data))
         if not unlabeled_data:
             print("[INFO] No unlabeled embeddings in database for clustering!")
@@ -174,22 +180,30 @@ class SmartLabelerController:
             print("Too less train different labels (min. 2 required), to start SVM prediction!")
         return {"ready_for_training": ready_for_training, "labeled_count": labeled_count}
 
-    def run_classification_phase(self, train_data=None):
+    def run_classification_phase(self):
         """Train the SVM pipeline and return train samples for evaluation."""
         print("\n[SYSTEM] Starting train phase...")
 
+        classifier = self.ui.ask_for_classifier(self.dataset)
+
+        if classifier == "VGG_face":
+            train_data = self.db.get_vgg_style_labeled_data_for_train(dataset=self.dataset)
+            print("Dlugosc danych treningowych: ", len(train_data))
+            return self.classification_with_vgg(train_data)
+
+        train_data = self.db.get_labeled_data_for_train(dataset=self.dataset)
+        if not train_data:
+            print("[BŁĄD] Brak danych treningowych w bazie.")
+            return None
         unique_labels = set(label for _, label, _ in train_data)
         if len(unique_labels) < 2:
             print(f"[BŁĄD] Zbyt mało osób ({len(unique_labels)}). Potrzeba min. 2 do SVM.")
             return None
 
-        classifier = self.ui.ask_for_classifier(self.dataset)
         if classifier == "svm":
             return self.classification_with_svm(train_data)
         elif classifier == "k_nearest_neighbors":
             return self.classification_with_knn(train_data)
-        elif classifier == "VGG_face":
-            return None
         else:
             print("Przerwano dzialanie programu")
             exit(0)
@@ -205,59 +219,113 @@ class SmartLabelerController:
         knn_classifier = KNNclassifier(train_embs, list(train_labels))
         return knn_classifier
 
-    def run_evaluation_phase(self, train_data, classifier):
+    def classification_with_vgg(self, train_data):
+        _, train_labels, train_images, _ = zip(*train_data)
+
+        unique_names = sorted(list(set(train_labels)))
+        idx_to_class = {i: name for i, name in enumerate(unique_names)}
+        class_to_idx = {name: i for i, name in enumerate(unique_names)}
+
+        num_classes = len(unique_names)
+
+        vgg_classifier = VGGClassifier(num_classes, idx_to_class, num_epochs_=10)
+        train_labels_idx = [class_to_idx[name] for name in train_labels]
+
+        # Rzutujemy krotki (tuples) z funkcji zip na tablice numpy
+        X = np.array(train_images, dtype=np.float32)
+        y = np.array(train_labels_idx, dtype=np.int64)  # Etykiety muszą być int64 (LongTensor)
+
+        vgg_classifier.fit(X, y)
+
+        return vgg_classifier
+
+    def run_evaluation_phase(self, classifier):
         """Run predictions for test data, log metrics, and refresh UI with results."""
-        test_data = self.db.get_unlabeled_test_data(dataset=self.dataset)
+        print("\n[SYSTEM] Starting evaluation phase...")
 
-        if not test_data:
-            print("[INFO] Brak nowych danych testowych do klasyfikacji.")
-            return False
+        # 1. Pozyskanie danych testowych i predykcji
+        if isinstance(classifier, VGGClassifier):
+            print("[INFO] Wykryto model VGG. Przygotowanie obrazów...")
+            # Zakładamy, że metoda zwraca: fid, label, image, path
+            test_data = self.db.get_vgg_style_labeled_data_for_train(dataset=self.dataset, is_test=1)
 
-        fids, paths, test_embs, _ = zip(*test_data)
+            if not test_data:
+                print("[INFO] Brak danych testowych dla VGG.")
+                return False
 
-        y_pred, confidences = classifier.predict_unlabeled(np.asarray(test_embs))
+            fids, labels, train_images, paths = zip(*test_data)
+
+            # predict_unlabeled zwraca list[(name, prob)]
+            predictions_with_probs = classifier.predict_unlabeled(np.asarray(train_images))
+
+            y_pred = [res[0] for res in predictions_with_probs]
+            confidences = [res[1] for res in predictions_with_probs]
+
+        else:
+            # Standardowa ścieżka dla SVM / KNN
+            test_data = self.db.get_unlabeled_test_data(dataset=self.dataset)
+            if not test_data:
+                print("[INFO] Brak nowych danych testowych.")
+                return False
+
+            fids, paths, test_embs, _ = zip(*test_data)
+
+            #SVM/KNN też zwraca (y_pred, confidences)
+            y_pred, confidences = classifier.predict_unlabeled(np.asarray(test_embs))
+
         if len(y_pred) == 0:
-            print("[BŁĄD] Model nie zwrócił predykcji.")
+            print("[BŁĄD] Model nie zwrócił żadnych wyników.")
             return False
 
+        # 2. Pobieranie etykiet prawdziwych (Ground Truth) do metryk
         y_true = [self.db.get_gt_from_path(path) for path in paths]
 
-        acc = accuracy_score(y_true, y_pred)
-        f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
-        report = classification_report(y_true, y_pred, zero_division=0)
+        # Filtrowanie próbek, które mają zdefiniowane GT (do raportu sklearn)
+        valid_idx = [i for i, label in enumerate(y_true) if label is not None and label != 'None']
 
+        if valid_idx:
+            y_true_eval = [y_true[i] for i in valid_idx]
+            y_pred_eval = [y_pred[i] for i in valid_idx]
+
+            acc = accuracy_score(y_true_eval, y_pred_eval)
+            f1 = f1_score(y_true_eval, y_pred_eval, average="weighted", zero_division=0)
+            report = classification_report(y_true_eval, y_pred_eval, zero_division=0)
+            avg_conf = sum(confidences) / len(confidences) if confidences else 0
+        else:
+            acc, f1, avg_conf = 0, 0, 0
+            report = "Brak danych Ground Truth do wygenerowania raportu."
+
+        # 3. Logowanie wyników do pliku
         log_path = "wyniki_klasyfikacji.txt"
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         with open(log_path, "a", encoding="utf-8") as file:
             file.write(f"\n{'=' * 60}\n")
-            file.write(f"SESJA: {timestamp}\n")
-            file.write(f"Próbki: Trening={len(train_data)}, Test={len(test_data)}\n")
+            file.write(f"SESJA VGG: {timestamp}\n")
+            file.write(f"Próbki testowe: {len(y_pred)}\n")
+            file.write(f"Średnia pewność (Confidence): {avg_conf:.2%}\n")
             file.write(f"Accuracy: {acc:.4f} | F1-Score: {f1:.4f}\n")
             file.write("-" * 30 + "\n")
-            file.write("Raport szczegółowy:\n")
+            file.write("Raport:\n")
             file.write(report)
             file.write(f"{'=' * 60}\n")
 
-        print(f"\n[SUKCES] Raport zapisany w: {log_path}")
-        print(report)
+        print(f"\n[SUKCES] Ewaluacja zakończona. Accuracy: {acc:.2%}")
 
-        # Keep confidence scores available for future thresholding logic.
-        if confidences is not None:
-            _ = confidences
-
+        # 4. Aktualizacja bazy danych i interfejsu
+        # Zapisujemy predykcję do bazy (fid -> imię)
         for fid, pred in zip(fids, y_pred):
             self.db.set_svm_prediction(fid, pred, dataset=self.dataset)
 
-        classified_list = list(zip(fids, y_pred))
-        self.ui.refresh_classified_faces(classified_list, self._manual_fix_callback)
+        # Przygotowanie listy dla UI: (fid, "Imię (98%)") lub (fid, "Imię")
+        classified_for_ui = []
+        for fid, name, conf in zip(fids, y_pred, confidences):
+            display_text = f"{name} ({conf:.1%})" if name != "Nieznany" else "Nieznany"
+            classified_for_ui.append((fid, display_text))
+
+        self.ui.refresh_classified_faces(classified_for_ui, self._manual_fix_callback)
         self.ui.set_visualization_enabled(True)
-        QMessageBox.information(
-            self.ui,
-            "Weryfikacja etykiet",
-            "Możesz teraz poprawić etykiety ręcznie w kafelkach.\n"
-            "Gdy skończysz, kliknij przycisk 'Generuj wizualizacje'.",
-        )
+
         return True
 
     def app_pipeline(self) -> None:
@@ -272,14 +340,10 @@ class SmartLabelerController:
 
         self.db.mark_unlabeled_as_test(dataset=self.dataset) # unlabeled data as test data
 
-        train_data = self.db.get_labeled_data_for_train(dataset=self.dataset)
-        if not train_data:
-            print("[BŁĄD] Brak danych treningowych w bazie.")
-            return None
-        classifier = self.run_classification_phase(train_data)
+        classifier = self.run_classification_phase()
 
         # ------------evaluation phase - test --------------------------------
-        self.run_evaluation_phase(train_data,classifier=classifier)
+        self.run_evaluation_phase(classifier=classifier)
 
     def _on_generate_visualization_clicked(self) -> None:
         """Generate annotated images after optional manual corrections in the grid."""
@@ -304,7 +368,7 @@ class SmartLabelerController:
             reply = QMessageBox.question(
                 self.ui,
                 "Przygotowanie danych",
-                "Czy chcesz ponownie przeliczyć embeddingi (HOG + PCA) przed startem klastrowania?",
+                "Czy chcesz ponownie przeliczyć embeddingi przed startem klastrowania?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
 

@@ -232,6 +232,23 @@ class FaceInterface(QMainWindow):
             return "VGG_face"
         return "cancel"
 
+    def ask_for_face_alignment(self, dataset: int):
+        """Ask the user which type of embeddings should be used."""
+        msg = QMessageBox()
+        msg.setWindowTitle("Kalibracja linii oczu")
+        msg.setText("Czy chcesz zastosowac kalibrację linii oczu w poziomie")
+        yes = msg.addButton("Tak", QMessageBox.ActionRole)
+        no = msg.addButton("Nie", QMessageBox.ActionRole)
+        msg.addButton("Anuluj", QMessageBox.RejectRole)
+
+        msg.exec_()
+
+        if msg.clickedButton() == yes:
+            return "yes"
+        if msg.clickedButton() == no:
+            return "no"
+        return "cancel"
+
     def ask_for_scan_dataset_id(self, title, comment) -> int:
         msg = QMessageBox()
         msg.setWindowTitle(title)

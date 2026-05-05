@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ml_engine import FaceExtractor, FaceClassifier, FacePreprocessor
+from ml_engine import FaceExtractor, FaceClusterer, FacePreprocessor
 
 import os
 import re
@@ -28,19 +28,18 @@ class GroundTruthClusterTool:
         self.db = db
         self.ui = FaceInterface()
         self.preprocessor = None
-        self.classifier = FaceClassifier()
+        self.classifier = FaceClusterer()
 
         self.min_cluster_size = min_cluster_size
         self._label_next_index: dict[str, int] = {}
         self.mode = "labeling"
-        self.preprocessing_type = "hog"
         self.dataset_id: int = 1
 
     def _setup_session_via_gui(self) -> bool:
         """Prompt user for dataset ID and preprocessing options via UI."""
 
         #wybor trybu
-        items = ["labeling", "change record", "delete record", "copy dataset", "recalculate face vectors"]
+        items = ["labeling", "change record", "delete record", "copy dataset", "recalculate face vectors", "align faces"]
         item, ok = QInputDialog.getItem(
             self.ui, "Wybor trybu", "Wybierz tryb: ", items, 0, False
         )
@@ -62,20 +61,10 @@ class GroundTruthClusterTool:
         self.dataset_id = int(item)
 
 
+
         # omitting next questions and pop-ups
-        if self.mode == "change record"  or self.mode == "delete record":
+        if self.mode == "change record"  or self.mode == "delete record" or self.mode == "align faces":
             return True
-
-        # 3. Pytanie o Recompute Embeddings
-        reply = QMessageBox.question(
-            self.ui,
-            "Przygotowanie danych",
-            "Czy chcesz ponownie przeliczyc embeddingi przed startem klastrowania?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        )
-
-        if reply == QMessageBox.Yes:
-            self.preprocessing_type = self.ui.ask_for_preprocessing_type(self.dataset_id)
 
         return True
 
@@ -398,7 +387,11 @@ class GroundTruthClusterTool:
             return
 
         print("Dataset domyslny: ", self.dataset_id)
-        if self.mode == "change record":
+        if self.mode == "align faces":
+            self.preprocessor = FacePreprocessor(dataset_id=self.dataset_id, db=self.db, cf=self.config)
+            self.preprocessor.compute_embedding_from_crop(alignment = True)
+
+        elif self.mode == "change record":
             while True:
                 self.change_record(self.dataset_id)
 
@@ -422,7 +415,7 @@ class GroundTruthClusterTool:
 
         elif self.mode == "recalculate face vectors":
             self.preprocessor = FacePreprocessor(dataset_id=self.dataset_id, db=self.db, cf=self.config)
-            self.preprocessor.compute_embedding_from_crop(self.preprocessing_type)
+            self.preprocessor.compute_embedding_from_crop()
 
         else:
             # 2. Pobranie niepodpisanych danych

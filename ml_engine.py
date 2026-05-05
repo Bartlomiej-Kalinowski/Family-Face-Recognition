@@ -4,6 +4,8 @@ import sys
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
+from torch import optim
+
 from database import FaceDatabase
 
 try:
@@ -26,6 +28,11 @@ from sklearn.preprocessing import Normalizer
 from tqdm import tqdm
 from sklearn.decomposition import IncrementalPCA
 from sklearn.neighbors import BallTree
+import torch.nn as nn
+from torchvision import models
+from torch.utils.data import TensorDataset, DataLoader
+import torch.nn.functional as F
+
 
 
 class FacePreprocessor:
@@ -53,7 +60,7 @@ class FacePreprocessor:
 
         img = cv2.imread(image_path)
         if img is None:
-            print("Brak sciezki do pliku z twarza!")
+            print(f"Brak sciezki do pliku z twarza: {image_path}")
             return None
 
         h, w, _ = img.shape
@@ -96,6 +103,12 @@ class FacePreprocessor:
             borderMode=cv2.BORDER_REPLICATE  # Klonuje krawędzie, by nie było czarnych dziur
         )
 
+        # Nadpisanie oryginalnego pliku na dysku
+        success = cv2.imwrite(image_path, aligned_img)
+        if not success:
+            print(f"[OSTRZEŻENIE] Nie udało się nadpisać pliku: {image_path}")
+        # =========================================================
+
         # 5. Skalowanie do SFace (112x112) i wyciągnięcie embeddingu
         aligned_resized = cv2.resize(aligned_img, (112, 112))
         embedding = self.recognizer.feature(aligned_resized)
@@ -119,16 +132,15 @@ class FacePreprocessor:
         return img
 
 
-    def compute_embedding_from_crop(self, type_of_preprocessing):
+    def compute_embedding_from_crop(self, alignment = False):
         nb_features = None
-        # WERSJA 1: SIEC NEURONOWA
-        if type_of_preprocessing == "neural_network":
+        self.db.clear_embeddings(self.dataset)
+        updated_correctly = 0
+        if alignment == True:
             self.recognizer = cv2.FaceRecognizerSF.create(
                 self.config.FACE_RECOGNIZER_CV_PATH,
                 ""
             )
-            self.db.clear_embeddings(self.dataset)
-            updated_correctly = 0
             for face_id, img_path, face_emb in tqdm(self.db.embedding_generator(self.dataset), "Ekstrakcja cech"):
                 print("Before: ", len(face_emb)) if face_emb is not None else None
                 face_emb = self.recompute_one_embedding_with_face_alignment(img_path)
@@ -147,7 +159,7 @@ class FacePreprocessor:
             print(f"\n[DONE] Neural Network update complete. Updated: {updated_correctly}")
             return  # PCA jest zbędne dla SFace
 
-        #WERSJA 2: hog + PCA
+        #WERSJA 2: bez face alignment
         pca = IncrementalPCA(n_components=150)
         scaler = Normalizer(norm='l2')
         updated_correctly = 0
@@ -255,7 +267,7 @@ class FaceExtractor:
 
 
 
-class FaceClassifier:
+class FaceClusterer:
     """Cluster unlabeled faces and run multi-class SVM classification."""
 
     def __init__(self):
@@ -280,7 +292,7 @@ class FaceClassifier:
         return clusters
 
 
-class SVMClassifier(FaceClassifier):
+class SVMClassifier:
     """SVM classifier for face classification."""
     def train_one_vs_rest_svm(self, x_train: list, y_train_labels: list) -> None:
         """Train an One-vs-Rest SVM pipeline with grid search."""
@@ -326,10 +338,10 @@ class SVMClassifier(FaceClassifier):
 
         return predictions, probabilities
 
-class KNNclassifier(FaceClassifier):
+class KNNclassifier:
     """KNN classifier for face classification."""
 
-    def __init__(self, x_train: np.ndarray, y_train: list[str], distance_threshold: float = 0.6):
+    def __init__(self, x_train: np.ndarray, y_train: list[str], distance_threshold: float = 100):
         """
         x_train: Macierz embeddingów wygenerowana i zatwierdzona z DBSCAN.
         y_train: Lista etykiet odpowiadająca wierszom w x_train (np. ["Jan", "Jan", "Anna", ...]).
@@ -341,9 +353,9 @@ class KNNclassifier(FaceClassifier):
 
         # Budujemy drzewo tylko raz na zatwierdzonych danych
         print("[INFO] Budowanie BallTree...")
-        self.kdt = BallTree(x_train, leaf_size=30, metric='euclidean')
+        self.kdt = BallTree(x_train, leaf_size=30)
 
-    def predict_unlabeled(self, x_test: np.ndarray) -> list[str]:
+    def predict_unlabeled(self, x_test: np.ndarray) -> tuple:
         """
         Klasyfikuje nowe wektory twarzy na podstawie k najbliższych sąsiadów.
         """
@@ -371,7 +383,92 @@ class KNNclassifier(FaceClassifier):
                 most_common_label = counts.most_common(1)[0][0]
                 predictions.append(most_common_label)
 
+        print("Typ predykcji zwracanej przez KNN: ", type(predictions))
         return predictions, None
+
+
+class VGGClassifier(nn.Module):
+    """VGG classifier for face classification."""
+    def __init__(self, num_classes, idx_to_class ,num_epochs_ = 10):
+        super(VGGClassifier, self).__init__()
+        self.vgg16_model = models.vgg16(weights=models.VGG16_Weights.DEFAULT) # loads pretrained weights
+        for param in self.vgg16_model.parameters(): # freezes all convolutional layers
+            param.requires_grad = False
+        in_features = self.vgg16_model.classifier[6].in_features # classifier[6] is the last fully connected layer
+        self.vgg16_model.classifier[6] = nn.Sequential(
+            nn.Dropout(p=0.6),  # Silny dropout dla małego zbioru
+            nn.Linear(in_features, num_classes)  # one linear layer - small train set
+        )
+        self.num_classes = num_classes
+        self.num_epochs = num_epochs_
+        self.idx_to_class = idx_to_class
+
+    def prepare_data(self, x_train, y_train, batch_size=16):
+        # 1. Konwersja na Tensory
+        # x_train: [liczba_zdjec, kanały, wysokość, szerokość]
+        # y_train: [liczba_zdjec] (liczby całkowite)
+        x_tensor = torch.tensor(x_train, dtype=torch.float32)
+        y_tensor = torch.tensor(y_train, dtype=torch.long)
+
+        # 2. Stworzenie obiektu Dataset (paczka cechy + etykiety)
+        dataset = TensorDataset(x_tensor, y_tensor)
+
+        # 3. Stworzenie DataLoadera
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+        return loader
+
+    def forward(self, x):
+        # Definiujemy jak dane płyną przez sieć
+        return self.vgg16_model(x)
+
+    def fit(self, x_train, y_train):
+        criterion = nn.CrossEntropyLoss()
+        # Optymalizator widzi tylko parametry z requires_grad=True
+        optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.vgg16_model.parameters()), lr=0.0001)
+
+        # 2. Pętla treningowa
+        train_loader = self.prepare_data(x_train, y_train)
+        self.vgg16_model.train()
+        for epoch in range(self.num_epochs):
+            running_loss = 0.0
+            for inputs, labels in train_loader:
+                optimizer.zero_grad()
+                outputs = self.vgg16_model(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item()
+            print(f"Epoch {epoch + 1}/{self.num_epochs}, Loss: {running_loss / len(train_loader)}")
+
+    def predict_unlabeled(self, x_test, threshold = 0.3):
+        self.vgg16_model.eval() # test mode, without dropout
+        predicted_names = []
+
+        x_tensor = torch.tensor(x_test, dtype=torch.float32)
+        test_loader = DataLoader(TensorDataset(x_tensor), batch_size=32, shuffle=False)
+
+
+        with torch.no_grad():  # nie liczymy gradientow podczas testu
+            for inputs in tqdm(test_loader, "Ocena skutecznosci modelu"):
+                outputs = self.vgg16_model(inputs[0])
+                probabilities = F.softmax(outputs, dim=1)
+
+                # 2. Pobranie najwyższego prawdopodobieństwa i jego indeksu
+                max_probs, predicted_indices = torch.max(probabilities, 1)
+
+                # 3. Sprawdzanie progu (Threshold) dla każdego zdjęcia
+                for prob, idx in zip(max_probs, predicted_indices):
+                    # Sprawdzamy, czy model jest pewny swego
+                    if prob.item() >= threshold:
+                        name = self.idx_to_class[idx.item()]
+                    else:
+                        name = "Nieznany"  # Model jest zbyt niepewny
+
+                    predicted_names.append((name, prob))
+
+            return predicted_names
+
 
 
 
