@@ -328,15 +328,30 @@ class SVMClassifier:
         print(f"Best parameters (OvR): {search.best_params_}")
         print(f"Best cross-validation score: {search.best_score_:.2%}")
 
-    def predict_unlabeled(self, x_test: np.ndarray) -> tuple:
+    def predict_unlabeled(self, x_test: np.ndarray, threshold = 0.3) -> tuple:
         """Predict labels and confidence scores for unlabeled embeddings."""
         if not self.is_trained:
             return [], []
 
-        predictions = self.model.predict(x_test)
-        probabilities = np.max(self.model.predict_proba(x_test), axis=1)
+        probs_all = self.model.predict_proba(x_test)
 
-        return predictions, probabilities
+        # Wyciągamy najwyższe prawdopodobieństwo i odpowiadający mu indeks klasy
+        max_probs = np.max(probs_all, axis=1)
+        max_indices = np.argmax(probs_all, axis=1)
+
+        final_predictions = []
+        class_names = self.model.classes_
+
+        for i in range(len(max_probs)):
+            prob = max_probs[i]
+            if prob < threshold:
+                final_predictions.append("Nieznana osoba")
+            else:
+                final_predictions.append(class_names[max_indices[i]])
+            print(f"Oryginał: {class_names[max_indices[i]]}, Pewność: {prob:.2%}")
+
+        return np.array(final_predictions), max_probs
+
 
 class KNNclassifier:
     """KNN classifier for face classification."""
@@ -441,7 +456,7 @@ class VGGClassifier(nn.Module):
                 running_loss += loss.item()
             print(f"Epoch {epoch + 1}/{self.num_epochs}, Loss: {running_loss / len(train_loader)}")
 
-    def predict_unlabeled(self, x_test, threshold = 0.3):
+    def predict_unlabeled(self, x_test, threshold = 0.25):
         self.vgg16_model.eval() # test mode, without dropout
         predicted_names = []
 

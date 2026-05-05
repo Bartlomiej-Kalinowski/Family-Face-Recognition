@@ -45,7 +45,7 @@ class SmartLabelerController:
     def refresh_main_view(self) -> None:
         """Reload labeled records from the database and repopulate the UI grid."""
         labeled_faces = self.db.get_all_labeled_faces(dataset=self.dataset)
-        self.ui.refresh_classified_faces(labeled_faces, self._manual_fix_callback)
+        self.ui.refresh_classified_faces(labeled_faces, self._manual_fix_callback, self.dataset)
 
     def run_initial_scan(self, mode: str, limit: int = 100000, callback=None) -> None:
         """Scan source images, extract faces, and store face crops with embeddings."""
@@ -53,7 +53,7 @@ class SmartLabelerController:
             self.db.clear_database(self.dataset)
             print("Clearing database...")
             for crop in os.listdir(self.config.FACES_DIR):
-                os.remove(os.path.join(self.config.FACES_DIR, crop))
+                os.remove(os.path.join(self.config.FACES_DIR + '_' + str(self.dataset), crop))
 
         all_paths = [
             os.path.normpath(os.path.abspath(os.path.join(root, f_name)))
@@ -290,7 +290,7 @@ class SmartLabelerController:
             acc = accuracy_score(y_true_eval, y_pred_eval)
             f1 = f1_score(y_true_eval, y_pred_eval, average="weighted", zero_division=0)
             report = classification_report(y_true_eval, y_pred_eval, zero_division=0)
-            avg_conf = sum(confidences) / len(confidences) if confidences else 0
+            avg_conf = sum(confidences) / len(confidences) if len(confidences) > 0 else 0
         else:
             acc, f1, avg_conf = 0, 0, 0
             report = "Brak danych Ground Truth do wygenerowania raportu."
@@ -320,10 +320,10 @@ class SmartLabelerController:
         # Przygotowanie listy dla UI: (fid, "Imię (98%)") lub (fid, "Imię")
         classified_for_ui = []
         for fid, name, conf in zip(fids, y_pred, confidences):
-            display_text = f"{name} ({conf:.1%})" if name != "Nieznany" else "Nieznany"
+            display_text = f"{name} ({conf:.1%})" if name != "Nieznana osoba" else "Nieznana osoba"
             classified_for_ui.append((fid, display_text))
 
-        self.ui.refresh_classified_faces(classified_for_ui, self._manual_fix_callback)
+        self.ui.refresh_classified_faces(classified_for_ui, self._manual_fix_callback, self.dataset)
         self.ui.set_visualization_enabled(True)
 
         return True

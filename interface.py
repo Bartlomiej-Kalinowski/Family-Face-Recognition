@@ -32,7 +32,7 @@ class FaceCard(QFrame):
 
     confirmed = pyqtSignal(str, str)
 
-    def __init__(self, face_id, name, parent=None):
+    def __init__(self, face_id, name, dataset, parent=None):
         """Build a card for one detected face."""
         super().__init__(parent)
         self.face_id = face_id
@@ -44,7 +44,7 @@ class FaceCard(QFrame):
 
         self.lbl_img = QLabel()
         self.lbl_img.setAlignment(Qt.AlignCenter)
-        face_path = os.path.join(Config.FACES_DIR, f"{face_id}.jpg")
+        face_path = os.path.join(Config.FACES_DIR+ '_' + str(dataset), f"{face_id}.jpg")
         pixmap = QPixmap(face_path)
         if not pixmap.isNull():
             self.lbl_img.setPixmap(pixmap.scaled(130, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -267,7 +267,7 @@ class FaceInterface(QMainWindow):
         else:
             return -1
 
-    def refresh_classified_faces(self, face_data_list, callback):
+    def refresh_classified_faces(self, face_data_list, callback, dataset):
         """Rebuild the grid from `(face_id, label, ...)` records."""
         for i in reversed(range(self.grid_layout.count())):
             widget = self.grid_layout.itemAt(i).widget()
@@ -278,7 +278,7 @@ class FaceInterface(QMainWindow):
             fid, name = self._parse_face_row(row)
             if not fid:
                 continue
-            card = FaceCard(fid, name)
+            card = FaceCard(fid, name, dataset)
             card.confirmed.connect(callback)
             self.grid_layout.addWidget(card, i // 6, i % 6)
 
