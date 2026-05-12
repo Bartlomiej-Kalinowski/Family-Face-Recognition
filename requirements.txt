@@ -1,0 +1,17 @@
+# Przetwarzanie obrazu i wideo
+opencv-python
+numpy
+
+# AI, Sieci neuronowe i Computer Vision
+torch
+torchvision
+ultralytics
+mediapipe
+
+# Uczenie maszynowe i analiza danych
+scikit-learn
+tqdm
+scipy
+
+# Interfejs graficzny (GUI)
+PyQt5

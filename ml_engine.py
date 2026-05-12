@@ -20,7 +20,6 @@ except Exception:
 import cv2
 import numpy as np
 from sklearn.cluster import DBSCAN
-from sklearn.model_selection import GridSearchCV
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
@@ -122,6 +121,17 @@ class FacePreprocessor:
     def recompute_one_embedding(face_image_path):
         # Wczytujemy fizyczny plik obrazu z dysku
         img = cv2.imread(face_image_path)
+
+        # # Pobieramy wymiary oryginalnego obrazu
+        # h, w = img.shape[:2]
+        #
+        # # Obliczamy margines (5% z każdej strony)
+        # margin_h = int(h * 0.025)
+        # margin_w = int(w * 0.025)
+        #
+        # # Przycinamy obraz (Crop)
+        # # img[y_start : y_end, x_start : x_end]
+        # img = img[margin_h: h - margin_h, margin_w: w - margin_w]
 
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         gray = cv2.cvtColor(cv2.resize(img, (64, 64)), cv2.COLOR_BGR2GRAY)
@@ -296,6 +306,8 @@ class SVMClassifier:
     """SVM classifier for face classification."""
     def train_one_vs_rest_svm(self, x_train: list, y_train_labels: list) -> None:
         """Train an One-vs-Rest SVM pipeline with grid search."""
+        print("X_train shape: ", len(x_train), "Y_train shape: ", len(y_train_labels))
+
         if len(set(y_train_labels)) < 2:
             return
 
@@ -330,6 +342,8 @@ class SVMClassifier:
 
     def predict_unlabeled(self, x_test: np.ndarray, threshold = 0.3) -> tuple:
         """Predict labels and confidence scores for unlabeled embeddings."""
+
+        print("X_test shape: ", x_test.shape, "Threshold: ", threshold)
         if not self.is_trained:
             return [], []
 
@@ -356,15 +370,18 @@ class SVMClassifier:
 class KNNclassifier:
     """KNN classifier for face classification."""
 
-    def __init__(self, x_train: np.ndarray, y_train: list[str], distance_threshold: float = 100):
+    def __init__(self, x_train: tuple, y_train: list[str], distance_threshold: float = 1.2):
         """
         x_train: Macierz embeddingów wygenerowana i zatwierdzona z DBSCAN.
         y_train: Lista etykiet odpowiadająca wierszom w x_train (np. ["Jan", "Jan", "Anna", ...]).
         distance_threshold: Maksymalna odległość euklidesowa. Powyżej tego progu twarz to "Nieznany".
         """
+        print("X_train shape: ", len(x_train), "Y_train shape: ", distance_threshold)
+
         self.y_train = np.array(y_train)
         self.threshold = distance_threshold
         self.k = 3
+
 
         # Budujemy drzewo tylko raz na zatwierdzonych danych
         print("[INFO] Budowanie BallTree...")
@@ -374,6 +391,8 @@ class KNNclassifier:
         """
         Klasyfikuje nowe wektory twarzy na podstawie k najbliższych sąsiadów.
         """
+
+        print("X_test shape: ", x_test.shape)
         from collections import Counter
         # Szukamy k-sąsiadów.
         distances, indices = self.kdt.query(x_test, k=self.k, return_distance=True)
@@ -388,9 +407,11 @@ class KNNclassifier:
                 current_dist = dist_i[j]
                 current_idx = ind_i[j]
                 if current_dist <= self.threshold:
+                    print("Current dist: ", current_dist)
                     valid_neighbors_labels.append(self.y_train[current_idx])
 
             if len(valid_neighbors_labels) == 0:
+                print("Znalezino nieznana osobe")
                 predictions.append("Nieznana osoba")
             else:
                 # Głosowanie większościowe tylko wśród "bliskich" sąsiadów
@@ -402,23 +423,68 @@ class KNNclassifier:
         return predictions, None
 
 
+class LoRALinear(nn.Module):
+    def __init__(self, linear_layer, rank=8, alpha=16):
+        super().__init__()
+        self.linear = linear_layer
+        self.rank = rank
+        self.alpha = alpha
+        self.scaling = alpha / rank
+
+        # Zamrażamy oryginalne wagi warstwy Linear
+        for param in self.linear.parameters():
+            param.requires_grad = False
+
+        in_features = linear_layer.in_features
+        out_features = linear_layer.out_features
+
+        # Nowe parametry LoRA (tylko one będą trenowane)
+        self.lora_A = nn.Parameter(torch.randn(in_features, rank) * 0.01)
+        self.lora_B = nn.Parameter(torch.zeros(rank, out_features))
+
+    def forward(self, x):
+        # Oryginalny wynik + ścieżka LoRA
+        return self.linear(x) + (x @ self.lora_A @ self.lora_B) * self.scaling
+
 class VGGClassifier(nn.Module):
     """VGG classifier for face classification."""
-    def __init__(self, num_classes, idx_to_class ,num_epochs_ = 10):
+    # def __init__(self, num_classes, idx_to_class ,num_epochs_ = 5, rank=8, alpha=16):
+    #     super(VGGClassifier, self).__init__()
+    #     self.vgg16_model = models.vgg16(weights=models.VGG16_Weights.DEFAULT) # loads pretrained weights
+    #     for param in self.vgg16_model.parameters(): # freezes all convolutional layers
+    #         param.requires_grad = False
+    #     in_features = self.vgg16_model.classifier[6].in_features # classifier[6] is the last fully connected layer
+    #     self.vgg16_model.classifier[6] = nn.Sequential(
+    #         nn.Dropout(p=0.6),  # Silny dropout dla małego zbioru
+    #         nn.Linear(in_features, num_classes)  # one linear layer - small train set
+    #     )
+    #     self.num_classes = num_classes
+    #     self.num_epochs = num_epochs_
+    #     self.idx_to_class = idx_to_class
+
+    def __init__(self, num_classes, idx_to_class ,num_epochs_ = 5, rank=8, alpha=16):
         super(VGGClassifier, self).__init__()
         self.vgg16_model = models.vgg16(weights=models.VGG16_Weights.DEFAULT) # loads pretrained weights
         for param in self.vgg16_model.parameters(): # freezes all convolutional layers
             param.requires_grad = False
         in_features = self.vgg16_model.classifier[6].in_features # classifier[6] is the last fully connected layer
-        self.vgg16_model.classifier[6] = nn.Sequential(
-            nn.Dropout(p=0.6),  # Silny dropout dla małego zbioru
-            nn.Linear(in_features, num_classes)  # one linear layer - small train set
+        self.vgg16_model.classifier[6] = nn.Linear(in_features, num_classes)
+
+        # 4. Opakowujemy tę nową warstwę w LoRA
+        # Dzięki temu będziemy trenować tylko macierze A i B dla ostatniej warstwy
+        self.vgg16_model.classifier[6] = LoRALinear(
+            self.vgg16_model.classifier[6],
+            rank=rank,
+            alpha=alpha
         )
         self.num_classes = num_classes
         self.num_epochs = num_epochs_
         self.idx_to_class = idx_to_class
 
+
     def prepare_data(self, x_train, y_train, batch_size=16):
+
+        print("X_train shape: ", len(x_train), "Y_train shape: ", len(y_train))
         # 1. Konwersja na Tensory
         # x_train: [liczba_zdjec, kanały, wysokość, szerokość]
         # y_train: [liczba_zdjec] (liczby całkowite)
@@ -440,7 +506,7 @@ class VGGClassifier(nn.Module):
     def fit(self, x_train, y_train):
         criterion = nn.CrossEntropyLoss()
         # Optymalizator widzi tylko parametry z requires_grad=True
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.vgg16_model.parameters()), lr=0.0001)
+        optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=0.0001)
 
         # 2. Pętla treningowa
         train_loader = self.prepare_data(x_train, y_train)
@@ -456,7 +522,9 @@ class VGGClassifier(nn.Module):
                 running_loss += loss.item()
             print(f"Epoch {epoch + 1}/{self.num_epochs}, Loss: {running_loss / len(train_loader)}")
 
-    def predict_unlabeled(self, x_test, threshold = 0.25):
+    def predict_unlabeled(self, x_test, threshold = 0.15):
+
+        print("X_test shape: ", len(x_test), "threshold: ", threshold)
         self.vgg16_model.eval() # test mode, without dropout
         predicted_names = []
 
@@ -478,7 +546,7 @@ class VGGClassifier(nn.Module):
                     if prob.item() >= threshold:
                         name = self.idx_to_class[idx.item()]
                     else:
-                        name = "Nieznany"  # Model jest zbyt niepewny
+                        name = "Nieznana osoba"  # Model jest zbyt niepewny
 
                     predicted_names.append((name, prob))
 

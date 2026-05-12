@@ -52,8 +52,9 @@ class SmartLabelerController:
         if mode == "full":
             self.db.clear_database(self.dataset)
             print("Clearing database...")
-            for crop in os.listdir(self.config.FACES_DIR):
-                os.remove(os.path.join(self.config.FACES_DIR + '_' + str(self.dataset), crop))
+            faces_dir = self.config.FACES_DIR + '_' + str(self.dataset) if self.dataset != 1 else self.config.FACES_DIR
+            for crop in os.listdir(faces_dir):
+                os.remove(os.path.join(faces_dir, crop))
 
         all_paths = [
             os.path.normpath(os.path.abspath(os.path.join(root, f_name)))
@@ -117,9 +118,8 @@ class SmartLabelerController:
             # Zapisujemy w bazie
             self.db.set_manual_label(fid, name, dataset=self.dataset, is_test=0)
 
-            if i % 10 == 0:  # Optymalizacja odświeżania paska postępu
-                self.ui.update_progress(i + 1, total, f"Zapisywanie: {name}")
-                QApplication.processEvents()
+            self.ui.update_progress(i + 1, total, f"Zapisywanie: {name}")
+            QApplication.processEvents()
 
         self.db._conn.commit()
         self.refresh_main_view()
@@ -140,41 +140,46 @@ class SmartLabelerController:
 
     def run_clustering_phase(self) -> dict:
         """Run DBSCAN clustering and return whether training can continue."""
-        unlabeled_data = self.db.get_all_embeddings_without_ground_truth(dataset=self.dataset)
+        unlabeled_data = self.db.get_all_embeddings_with_ground_truth(dataset=self.dataset)
 
-        # wybor jedynie czesci zbioru do trainsowania, ale nie wszystkie
+        # wybor jedynie czesci zbioru do trenowania, ale nie wszystkich
         import random
-        unlabeled_data = random.sample(unlabeled_data, int(0.8 * len(unlabeled_data)))
+        unlabeled_data = random.sample(unlabeled_data, int(0.7 * len(unlabeled_data)))
 
-        print("Number of unlabeled faces in database -- test:\t", len(unlabeled_data))
+        print("Number of unlabeled faces in database -- train:\t", len(unlabeled_data))
         if not unlabeled_data:
             print("[INFO] No unlabeled embeddings in database for clustering!")
             return {"ready_for_training": False, "labeled_count": 0}
 
-        fids = [item[0] for item in unlabeled_data]
-        embeddings = np.array([item[1] for item in unlabeled_data])
+        mode = input("Testowy tryb(1), tryb normalny - okienkowy(0): ")
+        if mode == "1":
+            self.db.assing_manual_labels_directly_from_ground_truth(dataset=self.dataset, data = unlabeled_data)
+        else:
+            fids = [item[0] for item in unlabeled_data]
+            embeddings = np.array([item[1] for item in unlabeled_data])
 
-        clusters = self.classifier.get_face_clusters(embeddings, fids) # dict of {"label1": [fid1, fid2, ...], ...}
+            clusters = self.classifier.get_face_clusters(embeddings, fids) # dict of {"label1": [fid1, fid2, ...], ...}
 
-        # cid - cluster id - label
-        # cfids - list of fids
-        # valid clusters is clusters without too small clusters
-        valid_clusters = {cid: cfids for cid, cfids in clusters.items() if len(cfids) >= 3}
+            # cid - cluster id - label
+            # cfids - list of fids
+            # valid clusters is clusters without too small clusters
+            valid_clusters = {cid: cfids for cid, cfids in clusters.items() if len(cfids) >= 2}
 
-        print("Number of all DBSCAN clusters:\t", len(clusters))
-        print("Valid clusters number (more than 3 faces per one cluster):\t", len(valid_clusters))
+            print("Number of all DBSCAN clusters:\t", len(clusters))
+            print("Valid clusters number (more than 3 faces per one cluster):\t", len(valid_clusters))
 
-        for cluster_fids in valid_clusters.values():
-            print("Number of faces in cluster:\t", len(cluster_fids))
+            for cluster_fids in valid_clusters.values():
+                print("Number of faces in cluster:\t", len(cluster_fids))
 
-            # Pobieramy ścieżki do zdjęć dla tego klastra, żeby GUI mogło je wyświetlić
-            cluster_fids_and_paths = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset)
+                # Pobieramy ścieżki do zdjęć dla tego klastra, żeby GUI mogło je wyświetlić
+                cluster_fids_and_paths = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset)
 
-            # Przekazujemy pary do funkcji bulk
-            self.process_bulk_selection(cluster_fids_and_paths)
+                # Przekazujemy pary do funkcji bulk
+                self.process_bulk_selection(cluster_fids_and_paths)
 
         # number of manual labels after DBSCAN
-        labeled_count = len(set(label for _, label, _ in self.db.get_labeled_data_for_train(dataset=self.dataset)))
+        faces_labeled = self.db.get_labeled_data_for_train(dataset=self.dataset)
+        labeled_count = len(set(label for _, label, _ in faces_labeled))
         ready_for_training = labeled_count >= 2
         if not ready_for_training:
             print("Too less train different labels (min. 2 required), to start SVM prediction!")
@@ -228,7 +233,7 @@ class SmartLabelerController:
 
         num_classes = len(unique_names)
 
-        vgg_classifier = VGGClassifier(num_classes, idx_to_class, num_epochs_=10)
+        vgg_classifier = VGGClassifier(num_classes, idx_to_class, num_epochs_= 3)
         train_labels_idx = [class_to_idx[name] for name in train_labels]
 
         # Rzutujemy krotki (tuples) z funkcji zip na tablice numpy
@@ -287,10 +292,19 @@ class SmartLabelerController:
             y_true_eval = [y_true[i] for i in valid_idx]
             y_pred_eval = [y_pred[i] for i in valid_idx]
 
+            print("y_ture eval: ", len(y_true_eval))
+            print("y_pred_eval: ", len(y_pred_eval))
+
+            for i, label in enumerate(y_pred_eval):
+                if label == "Nieznana osoba":
+                    print("Nieznana osoba: ", y_pred_eval[i])
+                    y_true_eval.pop(i)
+                    y_pred_eval.pop(i)
+
             acc = accuracy_score(y_true_eval, y_pred_eval)
             f1 = f1_score(y_true_eval, y_pred_eval, average="weighted", zero_division=0)
             report = classification_report(y_true_eval, y_pred_eval, zero_division=0)
-            avg_conf = sum(confidences) / len(confidences) if len(confidences) > 0 else 0
+            avg_conf = sum(confidences) / len(confidences) if confidences is not None else 0
         else:
             acc, f1, avg_conf = 0, 0, 0
             report = "Brak danych Ground Truth do wygenerowania raportu."
@@ -301,7 +315,7 @@ class SmartLabelerController:
 
         with open(log_path, "a", encoding="utf-8") as file:
             file.write(f"\n{'=' * 60}\n")
-            file.write(f"SESJA VGG: {timestamp}\n")
+            file.write(f"SESJA: {timestamp}\n")
             file.write(f"Próbki testowe: {len(y_pred)}\n")
             file.write(f"Średnia pewność (Confidence): {avg_conf:.2%}\n")
             file.write(f"Accuracy: {acc:.4f} | F1-Score: {f1:.4f}\n")
@@ -319,9 +333,14 @@ class SmartLabelerController:
 
         # Przygotowanie listy dla UI: (fid, "Imię (98%)") lub (fid, "Imię")
         classified_for_ui = []
-        for fid, name, conf in zip(fids, y_pred, confidences):
-            display_text = f"{name} ({conf:.1%})" if name != "Nieznana osoba" else "Nieznana osoba"
-            classified_for_ui.append((fid, display_text))
+        if confidences is not None:
+            for fid, name, conf in zip(fids, y_pred, confidences):
+                display_text = f"{name} ({conf:.1%})" if name != "Nieznana osoba" else "Nieznana osoba"
+                classified_for_ui.append((fid, display_text))
+        else:
+            for fid, name in zip(fids, y_pred):
+                display_text = f"{name}"
+                classified_for_ui.append((fid, display_text))
 
         self.ui.refresh_classified_faces(classified_for_ui, self._manual_fix_callback, self.dataset)
         self.ui.set_visualization_enabled(True)
@@ -376,6 +395,7 @@ class SmartLabelerController:
                 self.preprocessing_phase()
 
             self.db.rebuild_db_from_files(dataset=self.dataset)
+            # self.db.test_rebuild_db_from_files(dataset=self.dataset)
             self.app_pipeline()
         elif mode == "full":
             for img in os.listdir(self.config.ANNOTATED_FACES_DIR):

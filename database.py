@@ -64,7 +64,7 @@ class FaceDatabase:
     def save_face(self, orig_image, face_img, face_id, bbox, dataset = 1, embedding=None, is_test=0, ground_truth = None
                   , manual_label=None, svm_prediction=None):
         """Save a cropped face image and its metadata entry."""
-        new_dir = self.config.FACES_DIR + '_' + str(dataset)
+        new_dir = self.config.FACES_DIR + '_' + str(dataset) if dataset != 1 else self.config.FACES_DIR
         face_path = os.path.join(new_dir, f"{face_id}.jpg")
 
         # Persist the crop first so database rows never point to missing files.
@@ -128,7 +128,7 @@ class FaceDatabase:
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb, _ in rows]
 
 
-    def get_all_embeddings_without_ground_truth(self, dataset: int = 1) -> list:
+    def get_all_embeddings_with_ground_truth(self, dataset: int = 1) -> list:
         """Return unlabeled faces as `(face_id, embedding_np)` tuples."""
         self._cursor.execute(
             """SELECT face_id, embedding, image_path FROM faces WHERE ground_truth_label != 'None'
@@ -139,11 +139,26 @@ class FaceDatabase:
         missing_faces = 0
         for fid, emb, p in rows:
             if not os.path.exists(p):
-                rows.remove((fid, p))
+                rows.remove((fid, emb, p))
                 print("Brak pliku dla: ", fid)
                 missing_faces += 1
         print(f"Dla {missing_faces} rekordow w bazie danych nie znaleziono pliku z twarzą")
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb, _  in rows]
+
+    def assing_manual_labels_directly_from_ground_truth(self, dataset: int, data: list):
+        for fid, _ in data:
+            self._cursor.execute("""SELECT ground_truth_label FROM faces WHERE face_id = ? AND dataset_id = ?"""
+                                 , (fid, dataset, ))
+            ground_truth_for_fid = self._cursor.fetchone()
+            print("ground_truth_for_fid: ", ground_truth_for_fid)
+            if ground_truth_for_fid is not None:
+                self._cursor.execute("""UPDATE faces SET manual_label = ? WHERE face_id = ? AND dataset_id = ?"""
+                                     , (ground_truth_for_fid[0], fid, dataset, ))
+                self._conn.commit()
+                print("Przypusje manual label = ", ground_truth_for_fid[0], " dla: ", fid)
+            else:
+                print("Brak etykiety dla: ", fid)
+
 
     def get_unlabeled_test_data(self, dataset: int = 1) -> list:
         """Return unlabeled test records as `(face_id, path, embedding_np, bbox)` tuples."""
@@ -199,6 +214,17 @@ class FaceDatabase:
             if img is None:
                 print(f"Brak sciezki do pliku z twarza: {path}")
                 continue
+
+            # Pobieramy wymiary oryginalnego obrazu
+            h, w = img.shape[:2]
+
+            # Obliczamy margines (5% z każdej strony)
+            margin_h = int(h * 0.025)
+            margin_w = int(w * 0.025)
+
+            # Przycinamy obraz (Crop)
+            # img[y_start : y_end, x_start : x_end]
+            img = img[margin_h: h - margin_h, margin_w: w - margin_w]
 
             # 1. BGR do RGB
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -309,9 +335,23 @@ class FaceDatabase:
             """
             UPDATE faces
             SET manual_label = NULL,
-                svm_prediction = NULL
-            WHERE manual_label IS NOT NULL OR svm_prediction IS NOT NULL AND dataset_id = ?
-            """, (dataset, )
+                svm_prediction = NULL, 
+                is_test = 0
+            WHERE (manual_label IS NOT NULL OR svm_prediction IS NOT NULL OR is_test != '0') AND dataset_id = ? 
+            """, (dataset, ) # manual_label is not null ?
+        )
+        updated_rows = self._cursor.rowcount
+        self._conn.commit()
+        print(f"Labels cleared in {updated_rows} records.")
+
+    def test_rebuild_db_from_files(self, dataset: int = 1):
+        print("Clearing DB fields: manual_labels and svm_predictions...")
+        self._cursor.execute(
+            """
+            UPDATE faces
+            SET svm_prediction = NULL
+            WHERE svm_prediction IS NOT NULL AND dataset_id = ?
+            """, (dataset,)
         )
         updated_rows = self._cursor.rowcount
         self._conn.commit()

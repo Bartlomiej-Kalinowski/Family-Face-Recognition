@@ -44,7 +44,7 @@ class FaceCard(QFrame):
 
         self.lbl_img = QLabel()
         self.lbl_img.setAlignment(Qt.AlignCenter)
-        face_path = os.path.join(Config.FACES_DIR+ '_' + str(dataset), f"{face_id}.jpg")
+        face_path = os.path.join(Config.FACES_DIR+ '_' + str(dataset) if dataset != 1 else Config.FACES_DIR, f"{face_id}.jpg")
         pixmap = QPixmap(face_path)
         if not pixmap.isNull():
             self.lbl_img.setPixmap(pixmap.scaled(130, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation))
