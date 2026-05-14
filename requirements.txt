@@ -15,3 +15,4 @@ scipy
 
 # Interfejs graficzny (GUI)
 PyQt5
+deepface

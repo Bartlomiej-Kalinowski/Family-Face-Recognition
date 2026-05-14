@@ -150,12 +150,10 @@ class FaceDatabase:
             self._cursor.execute("""SELECT ground_truth_label FROM faces WHERE face_id = ? AND dataset_id = ?"""
                                  , (fid, dataset, ))
             ground_truth_for_fid = self._cursor.fetchone()
-            print("ground_truth_for_fid: ", ground_truth_for_fid)
             if ground_truth_for_fid is not None:
                 self._cursor.execute("""UPDATE faces SET manual_label = ? WHERE face_id = ? AND dataset_id = ?"""
                                      , (ground_truth_for_fid[0], fid, dataset, ))
                 self._conn.commit()
-                print("Przypusje manual label = ", ground_truth_for_fid[0], " dla: ", fid)
             else:
                 print("Brak etykiety dla: ", fid)
 

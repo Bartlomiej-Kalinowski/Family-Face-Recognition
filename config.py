@@ -11,6 +11,7 @@ class Config:
     YOLO_MODEL_PATH = r"C:\Users\Kalin\PycharmProjects\LIC\models\yolov8n-face.pt"
     FACE_LANDMARKER_MODEL_PATH = r"C:\Users\Kalin\PycharmProjects\LIC\models\face_landmarker.task"
     FACE_RECOGNIZER_CV_PATH = r"C:\Users\Kalin\PycharmProjects\LIC\models\face_recognition_sface_2021dec.onnx"
+    VGG_FACE_WEIGHTS_PATH = r"C:\Users\Kalin\PycharmProjects\LIC\models\VGG_FACE.caffemodel.pth"
 
     BASE_DIR = Path(__file__).resolve().parent
     OUTPUT_DIR = str(BASE_DIR / "output_data")

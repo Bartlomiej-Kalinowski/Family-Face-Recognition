@@ -233,7 +233,7 @@ class SmartLabelerController:
 
         num_classes = len(unique_names)
 
-        vgg_classifier = VGGClassifier(num_classes, idx_to_class, num_epochs_= 3)
+        vgg_classifier = VGGClassifier(self.config, num_classes, idx_to_class, num_epochs_ = 5)
         train_labels_idx = [class_to_idx[name] for name in train_labels]
 
         # Rzutujemy krotki (tuples) z funkcji zip na tablice numpy

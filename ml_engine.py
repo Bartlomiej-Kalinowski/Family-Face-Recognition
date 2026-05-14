@@ -380,12 +380,12 @@ class KNNclassifier:
 
         self.y_train = np.array(y_train)
         self.threshold = distance_threshold
-        self.k = 3
+        self.k = 1
 
 
         # Budujemy drzewo tylko raz na zatwierdzonych danych
         print("[INFO] Budowanie BallTree...")
-        self.kdt = BallTree(x_train, leaf_size=30)
+        self.bt = BallTree(x_train, leaf_size=30)
 
     def predict_unlabeled(self, x_test: np.ndarray) -> tuple:
         """
@@ -395,7 +395,7 @@ class KNNclassifier:
         print("X_test shape: ", x_test.shape)
         from collections import Counter
         # Szukamy k-sąsiadów.
-        distances, indices = self.kdt.query(x_test, k=self.k, return_distance=True)
+        distances, indices = self.bt.query(x_test, k=self.k, return_distance=True)
         predictions = []
 
         for i in range(len(x_test)):
@@ -462,18 +462,26 @@ class VGGClassifier(nn.Module):
     #     self.num_epochs = num_epochs_
     #     self.idx_to_class = idx_to_class
 
-    def __init__(self, num_classes, idx_to_class ,num_epochs_ = 5, rank=8, alpha=16):
+    def __init__(self, cf, num_classes, idx_to_class ,num_epochs_ = 5, rank=8, alpha=16):
         super(VGGClassifier, self).__init__()
-        self.vgg16_model = models.vgg16(weights=models.VGG16_Weights.DEFAULT) # loads pretrained weights
-        for param in self.vgg16_model.parameters(): # freezes all convolutional layers
+        self.vgg_face_model = models.vgg16(weights=None) # nie pobieramy wag bo zastapimy je dedykowanymi dla twarzy
+        try:
+            state_dict = torch.load(cf.VGG_FACE_WEIGHTS_PATH)
+            self.vgg_face_model.load_state_dict(state_dict, strict=False)
+            print("Zaladowano oryginalne wagi VGG-Face.")
+        except:
+            print("Nie znaleziono pliku wag VGG-Face. Ladowanie domyslnych wag ImageNet...")
+            self.vgg_face_model = models.vgg16(weights=models.VGG16_Weights.DEFAULT)
+
+        for param in self.vgg_face_model.parameters(): # freezes all convolutional layers
             param.requires_grad = False
-        in_features = self.vgg16_model.classifier[6].in_features # classifier[6] is the last fully connected layer
-        self.vgg16_model.classifier[6] = nn.Linear(in_features, num_classes)
+        in_features = self.vgg_face_model.classifier[6].in_features # classifier[6] is the last fully connected layer
+        self.vgg_face_model.classifier[6] = nn.Linear(in_features, num_classes)
 
         # 4. Opakowujemy tę nową warstwę w LoRA
         # Dzięki temu będziemy trenować tylko macierze A i B dla ostatniej warstwy
-        self.vgg16_model.classifier[6] = LoRALinear(
-            self.vgg16_model.classifier[6],
+        self.vgg_face_model.classifier[6] = LoRALinear(
+            self.vgg_face_model.classifier[6],
             rank=rank,
             alpha=alpha
         )
@@ -501,7 +509,7 @@ class VGGClassifier(nn.Module):
 
     def forward(self, x):
         # Definiujemy jak dane płyną przez sieć
-        return self.vgg16_model(x)
+        return self.vgg_face_model(x)
 
     def fit(self, x_train, y_train):
         criterion = nn.CrossEntropyLoss()
@@ -510,22 +518,22 @@ class VGGClassifier(nn.Module):
 
         # 2. Pętla treningowa
         train_loader = self.prepare_data(x_train, y_train)
-        self.vgg16_model.train()
+        self.vgg_face_model.train()
         for epoch in range(self.num_epochs):
             running_loss = 0.0
             for inputs, labels in train_loader:
                 optimizer.zero_grad()
-                outputs = self.vgg16_model(inputs)
+                outputs = self.vgg_face_model(inputs)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
                 running_loss += loss.item()
             print(f"Epoch {epoch + 1}/{self.num_epochs}, Loss: {running_loss / len(train_loader)}")
 
-    def predict_unlabeled(self, x_test, threshold = 0.15):
+    def predict_unlabeled(self, x_test, threshold = 0.05):
 
         print("X_test shape: ", len(x_test), "threshold: ", threshold)
-        self.vgg16_model.eval() # test mode, without dropout
+        self.vgg_face_model.eval() # test mode, without dropout
         predicted_names = []
 
         x_tensor = torch.tensor(x_test, dtype=torch.float32)
@@ -534,7 +542,7 @@ class VGGClassifier(nn.Module):
 
         with torch.no_grad():  # nie liczymy gradientow podczas testu
             for inputs in tqdm(test_loader, "Ocena skutecznosci modelu"):
-                outputs = self.vgg16_model(inputs[0])
+                outputs = self.vgg_face_model(inputs[0])
                 probabilities = F.softmax(outputs, dim=1)
 
                 # 2. Pobranie najwyższego prawdopodobieństwa i jego indeksu
