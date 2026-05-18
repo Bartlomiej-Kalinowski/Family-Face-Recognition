@@ -3,6 +3,8 @@
 import json
 import os
 import sqlite3
+from collections import defaultdict
+
 import cv2
 import numpy as np
 
@@ -145,12 +147,18 @@ class FaceDatabase:
         print(f"Dla {missing_faces} rekordow w bazie danych nie znaleziono pliku z twarzą")
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb, _  in rows]
 
-    def assing_manual_labels_directly_from_ground_truth(self, dataset: int, data: list):
+    def assing_manual_labels_directly_from_ground_truth(self, dataset: int, data: list, mean_cluster_size = None):
+        number_of_faces_per_label = defaultdict(list) # {label: [fid1, fid2...], ...}
         for fid, _ in data:
             self._cursor.execute("""SELECT ground_truth_label FROM faces WHERE face_id = ? AND dataset_id = ?"""
                                  , (fid, dataset, ))
             ground_truth_for_fid = self._cursor.fetchone()
             if ground_truth_for_fid is not None:
+                number_of_faces_per_label[ground_truth_for_fid[0]].append(fid)
+                if mean_cluster_size is not None and len(number_of_faces_per_label[ground_truth_for_fid[0]]) > 1.5 * mean_cluster_size:
+                    print("Zbyt wiele twarzy dla etykiety: ", ground_truth_for_fid[0], " dla: ", fid)
+                    continue
+
                 self._cursor.execute("""UPDATE faces SET manual_label = ? WHERE face_id = ? AND dataset_id = ?"""
                                      , (ground_truth_for_fid[0], fid, dataset, ))
                 self._conn.commit()
@@ -207,6 +215,9 @@ class FaceDatabase:
         )
         rows = self._cursor.fetchall()
         data = []
+        mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
+        std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
+
         for fid, label, path in rows:
             img = cv2.imread(path)
             if img is None:
@@ -217,21 +228,23 @@ class FaceDatabase:
             h, w = img.shape[:2]
 
             # Obliczamy margines (5% z każdej strony)
-            margin_h = int(h * 0.025)
-            margin_w = int(w * 0.025)
+            margin_h = int(h * 0.0)
+            margin_w = int(w * 0.0)
 
             # Przycinamy obraz (Crop)
             # img[y_start : y_end, x_start : x_end]
             img = img[margin_h: h - margin_h, margin_w: w - margin_w]
 
-            # 1. BGR do RGB
+            # BGR do RGB
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            # 2. Zmiana rozmiaru
             resized_image = cv2.resize(img_rgb, (224, 224))
 
-            # 3. Zmiana układu osi (H, W, C) na (C, H, W) i skalowanie z 0-255 na 0.0-1.0
+            # 3. Zmiana układu osi i skalowanie
             pytorch_image = np.transpose(resized_image, (2, 0, 1)) / 255.0
+
+            # 3. Zmiana układu osi (H, W, C) na (C, H, W) i skalowanie z 0-255 na 0.0-1.0
+            pytorch_image = (pytorch_image - mean) / std
 
             data.append((fid, label, pytorch_image, path))
 
@@ -284,6 +297,13 @@ class FaceDatabase:
         """Flag all currently unlabeled entries as test samples."""
         self._cursor.execute("UPDATE faces SET is_test = 1 WHERE manual_label IS NULL AND dataset_id = ?",
                              (dataset, ) )
+        self._conn.commit()
+
+    def mark_as_test(self, dataset, fids: list):
+        """Flag all currently additional data as test samples."""
+        for fid in fids:
+            self._cursor.execute("UPDATE faces SET is_test = 1 WHERE dataset_id = ? AND face_id = ?",
+                             (dataset, fid) )
         self._conn.commit()
 
     def get_label_by_id(self, face_id, dataset: int = 1) -> str:

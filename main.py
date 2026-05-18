@@ -1,4 +1,5 @@
 ﻿"""Application controller tying together UI, database, and ML workflows."""
+from collections import defaultdict
 
 from ml_engine import FaceClusterer, FaceExtractor, FacePreprocessor, SVMClassifier, KNNclassifier, VGGClassifier
 
@@ -151,20 +152,18 @@ class SmartLabelerController:
             print("[INFO] No unlabeled embeddings in database for clustering!")
             return {"ready_for_training": False, "labeled_count": 0}
 
+        fids = [item[0] for item in unlabeled_data]
+        embeddings = np.array([item[1] for item in unlabeled_data])
+        clusters = self.classifier.get_face_clusters(embeddings, fids)  # dict of {"label1": [fid1, fid2, ...], ...}
+
         mode = input("Testowy tryb(1), tryb normalny - okienkowy(0): ")
         if mode == "1":
             self.db.assing_manual_labels_directly_from_ground_truth(dataset=self.dataset, data = unlabeled_data)
         else:
-            fids = [item[0] for item in unlabeled_data]
-            embeddings = np.array([item[1] for item in unlabeled_data])
-
-            clusters = self.classifier.get_face_clusters(embeddings, fids) # dict of {"label1": [fid1, fid2, ...], ...}
-
             # cid - cluster id - label
             # cfids - list of fids
             # valid clusters is clusters without too small clusters
-            valid_clusters = {cid: cfids for cid, cfids in clusters.items() if len(cfids) >= 2}
-
+            valid_clusters = {cid: cfids for cid, cfids in clusters.items() if len(cfids) >= 1}
             print("Number of all DBSCAN clusters:\t", len(clusters))
             print("Valid clusters number (more than 3 faces per one cluster):\t", len(valid_clusters))
 
@@ -185,14 +184,52 @@ class SmartLabelerController:
             print("Too less train different labels (min. 2 required), to start SVM prediction!")
         return {"ready_for_training": ready_for_training, "labeled_count": labeled_count}
 
-    def run_classification_phase(self):
+    def calculate_mean_labels_group_size_and_limit_group_size(self, train_data):
+        labels_groups = defaultdict(list)
+        for tpl in train_data:
+            label = tpl[1]  # wyciągam manual_label
+            labels_groups[label].append(tpl)
+
+        # Zliczanie grup
+        number_of_groups = len(labels_groups)
+        print(f"Liczba unikalnych grup manual_label: {number_of_groups}")
+
+        # obliczanie sredniej ilosci fids na etykiete
+        mean_fids_per_label = 0
+        i = 0
+        for label, group in labels_groups.items():
+            mean_fids_per_label += len(group)
+            i += 1
+        mean_fids_per_label /= i
+
+        print("Mean number of fids per label: ", mean_fids_per_label)
+
+        #limitowanie dlugosci grupy
+        new_test_data = []
+        for label, group in labels_groups.items():
+            labels_groups[label] = group[:int(mean_fids_per_label * 10.0)]
+            new_test_data.extend(group[int(mean_fids_per_label * 10.0):])
+            print("Zostawiam w grupie testowej dla etykiety: ", label, " ", len(group[int(mean_fids_per_label * 10.0):]), "")
+
+        # Konwersja wartości słownika na listę krotek
+        train_data = []
+        for groups in labels_groups.values():
+            train_data.extend(groups)
+
+        print("Dodatkowe dane do zbioru test: ", len(new_test_data))
+        to_test = [data[0] for data in new_test_data]
+        self.db.mark_as_test(self.dataset, to_test)
+
+        return train_data
+
+    def run_classification_phase(self, classifier, balance_classes=None):
         """Train the SVM pipeline and return train samples for evaluation."""
         print("\n[SYSTEM] Starting train phase...")
 
-        classifier = self.ui.ask_for_classifier(self.dataset)
-
         if classifier == "VGG_face":
             train_data = self.db.get_vgg_style_labeled_data_for_train(dataset=self.dataset)
+            if balance_classes:
+                train_data = self.calculate_mean_labels_group_size_and_limit_group_size(train_data)
             print("Dlugosc danych treningowych: ", len(train_data))
             return self.classification_with_vgg(train_data)
 
@@ -200,9 +237,13 @@ class SmartLabelerController:
         if not train_data:
             print("[BŁĄD] Brak danych treningowych w bazie.")
             return None
+
+        if balance_classes:
+            train_data = self.calculate_mean_labels_group_size_and_limit_group_size(train_data)
+
         unique_labels = set(label for _, label, _ in train_data)
         if len(unique_labels) < 2:
-            print(f"[BŁĄD] Zbyt mało osób ({len(unique_labels)}). Potrzeba min. 2 do SVM.")
+            print(f"[BŁĄD] Zbyt mało osób ({len(unique_labels)}). Potrzeba min. 2.")
             return None
 
         if classifier == "svm":
@@ -233,7 +274,7 @@ class SmartLabelerController:
 
         num_classes = len(unique_names)
 
-        vgg_classifier = VGGClassifier(self.config, num_classes, idx_to_class, num_epochs_ = 5)
+        vgg_classifier = VGGClassifier(self.config, num_classes, idx_to_class, num_epochs_ = 15)
         train_labels_idx = [class_to_idx[name] for name in train_labels]
 
         # Rzutujemy krotki (tuples) z funkcji zip na tablice numpy
@@ -275,7 +316,7 @@ class SmartLabelerController:
 
             fids, paths, test_embs, _ = zip(*test_data)
 
-            #SVM/KNN też zwraca (y_pred, confidences)
+            #SVM/KNN zwraca (y_pred, confidences)
             y_pred, confidences = classifier.predict_unlabeled(np.asarray(test_embs))
 
         if len(y_pred) == 0:
@@ -292,14 +333,24 @@ class SmartLabelerController:
             y_true_eval = [y_true[i] for i in valid_idx]
             y_pred_eval = [y_pred[i] for i in valid_idx]
 
-            print("y_ture eval: ", len(y_true_eval))
-            print("y_pred_eval: ", len(y_pred_eval))
+            print("y_ture eval (przed filtrowaniem): ", len(y_true_eval))
+            print("y_pred_eval (przed filtrowaniem): ", len(y_pred_eval))
 
-            for i, label in enumerate(y_pred_eval):
-                if label == "Nieznana osoba":
-                    print("Nieznana osoba: ", y_pred_eval[i])
-                    y_true_eval.pop(i)
-                    y_pred_eval.pop(i)
+            filtered_y_true = []
+            filtered_y_pred = []
+
+            for true_label, pred_label in zip(y_true_eval, y_pred_eval):
+                if pred_label == "Nieznana osoba":
+                    print("Ignorowanie (Nieznana osoba)")
+                else:
+                    filtered_y_true.append(true_label)
+                    filtered_y_pred.append(pred_label)
+
+            y_true_eval = filtered_y_true
+            y_pred_eval = filtered_y_pred
+
+            print("y_ture eval (po filtrowaniu): ", len(y_true_eval))
+            print("y_pred_eval (po filtrowaniu): ", len(y_pred_eval))
 
             acc = accuracy_score(y_true_eval, y_pred_eval)
             f1 = f1_score(y_true_eval, y_pred_eval, average="weighted", zero_division=0)
@@ -349,17 +400,25 @@ class SmartLabelerController:
 
     def app_pipeline(self) -> None:
         """Manage clustering -> classification -> evaluation using explicit returns."""
+        classifier_type = self.ui.ask_for_classifier(self.dataset)
+
         #-------------clustering and labeling by user------------------------
-        clustering_result = self.run_clustering_phase()
+        is_vgg = False
+        if classifier_type == "VGG_face":
+            is_vgg = True
+            clustering_result = self.run_clustering_phase()
+        else:
+            clustering_result = self.run_clustering_phase()
+
         if not clustering_result["ready_for_training"]:
             return
-        print(f"Have {clustering_result['labeled_count']} people labeled by user. Starting SVM prediction...")
+
+        print(f"Have {clustering_result['labeled_count']} people labeled by user. Starting the prediction...")
 
         #-------------classification-train phase------------------------------
 
         self.db.mark_unlabeled_as_test(dataset=self.dataset) # unlabeled data as test data
-
-        classifier = self.run_classification_phase()
+        classifier = self.run_classification_phase(classifier=classifier_type, balance_classes=is_vgg)
 
         # ------------evaluation phase - test --------------------------------
         self.run_evaluation_phase(classifier=classifier)

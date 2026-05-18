@@ -370,7 +370,7 @@ class SVMClassifier:
 class KNNclassifier:
     """KNN classifier for face classification."""
 
-    def __init__(self, x_train: tuple, y_train: list[str], distance_threshold: float = 1.2):
+    def __init__(self, x_train: tuple, y_train: list[str], distance_threshold: float = 1.0):
         """
         x_train: Macierz embeddingów wygenerowana i zatwierdzona z DBSCAN.
         y_train: Lista etykiet odpowiadająca wierszom w x_train (np. ["Jan", "Jan", "Anna", ...]).
@@ -405,6 +405,7 @@ class KNNclassifier:
 
             for j in range(self.k):
                 current_dist = dist_i[j]
+                print(current_dist)
                 current_idx = ind_i[j]
                 if current_dist <= self.threshold:
                     print("Current dist: ", current_dist)
@@ -439,8 +440,8 @@ class LoRALinear(nn.Module):
         out_features = linear_layer.out_features
 
         # Nowe parametry LoRA (tylko one będą trenowane)
-        self.lora_A = nn.Parameter(torch.randn(in_features, rank) * 0.01)
-        self.lora_B = nn.Parameter(torch.zeros(rank, out_features))
+        self.lora_A = nn.Parameter(torch.randn(in_features, rank) * 0.01, requires_grad=True)
+        self.lora_B = nn.Parameter(torch.zeros(rank, out_features), requires_grad=True)
 
     def forward(self, x):
         # Oryginalny wynik + ścieżka LoRA
@@ -448,19 +449,6 @@ class LoRALinear(nn.Module):
 
 class VGGClassifier(nn.Module):
     """VGG classifier for face classification."""
-    # def __init__(self, num_classes, idx_to_class ,num_epochs_ = 5, rank=8, alpha=16):
-    #     super(VGGClassifier, self).__init__()
-    #     self.vgg16_model = models.vgg16(weights=models.VGG16_Weights.DEFAULT) # loads pretrained weights
-    #     for param in self.vgg16_model.parameters(): # freezes all convolutional layers
-    #         param.requires_grad = False
-    #     in_features = self.vgg16_model.classifier[6].in_features # classifier[6] is the last fully connected layer
-    #     self.vgg16_model.classifier[6] = nn.Sequential(
-    #         nn.Dropout(p=0.6),  # Silny dropout dla małego zbioru
-    #         nn.Linear(in_features, num_classes)  # one linear layer - small train set
-    #     )
-    #     self.num_classes = num_classes
-    #     self.num_epochs = num_epochs_
-    #     self.idx_to_class = idx_to_class
 
     def __init__(self, cf, num_classes, idx_to_class ,num_epochs_ = 5, rank=8, alpha=16):
         super(VGGClassifier, self).__init__()
@@ -514,7 +502,7 @@ class VGGClassifier(nn.Module):
     def fit(self, x_train, y_train):
         criterion = nn.CrossEntropyLoss()
         # Optymalizator widzi tylko parametry z requires_grad=True
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=0.0001)
+        optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=0.001)
 
         # 2. Pętla treningowa
         train_loader = self.prepare_data(x_train, y_train)
@@ -530,7 +518,7 @@ class VGGClassifier(nn.Module):
                 running_loss += loss.item()
             print(f"Epoch {epoch + 1}/{self.num_epochs}, Loss: {running_loss / len(train_loader)}")
 
-    def predict_unlabeled(self, x_test, threshold = 0.05):
+    def predict_unlabeled(self, x_test, threshold = 0.03):
 
         print("X_test shape: ", len(x_test), "threshold: ", threshold)
         self.vgg_face_model.eval() # test mode, without dropout
