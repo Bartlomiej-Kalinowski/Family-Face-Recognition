@@ -12,7 +12,10 @@ mediapipe
 scikit-learn
 tqdm
 scipy
+torch
+torchvision
+facenet-pytorch
+setuptools<82
 
 # Interfejs graficzny (GUI)
-PyQt5
-deepface
+PyQt5==5.15.11

@@ -202,8 +202,12 @@ class FaceDatabase:
         rows = self._cursor.fetchall()
         return [(fid, label, np.array(json.loads(emb)).astype(float)) for fid, label, emb in rows]
 
-    def get_vgg_style_labeled_data_for_train(self, dataset: int = 1, is_test = 0) -> list:
-        """Return training entries with manual labels."""
+    def get_vgg_style_labeled_data_for_train(
+            self,
+            dataset: int = 1,
+            is_test=0
+    ):
+
         self._cursor.execute(
             """
             SELECT face_id, manual_label, image_path
@@ -211,44 +215,77 @@ class FaceDatabase:
             WHERE dataset_id = ?
               AND is_test = ?
               AND ground_truth_label != 'None'
-            """, (dataset,is_test)
+            """,
+            (dataset, is_test)
         )
+
         rows = self._cursor.fetchall()
+
         data = []
-        mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
-        std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
 
         for fid, label, path in rows:
+
             img = cv2.imread(path)
+
             if img is None:
-                print(f"Brak sciezki do pliku z twarza: {path}")
                 continue
 
-            # Pobieramy wymiary oryginalnego obrazu
-            h, w = img.shape[:2]
+            # BGR -> RGB
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            # Obliczamy margines (5% z każdej strony)
-            margin_h = int(h * 0.0)
-            margin_w = int(w * 0.0)
+            # resize
+            img = cv2.resize(img, (160, 160))
 
-            # Przycinamy obraz (Crop)
-            # img[y_start : y_end, x_start : x_end]
-            img = img[margin_h: h - margin_h, margin_w: w - margin_w]
+            # float32
+            img = img.astype(np.float32)
 
-            # BGR do RGB
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            # [0,255] -> [0,1]
+            img /= 255.0
 
-            resized_image = cv2.resize(img_rgb, (224, 224))
+            # [0,1] -> [-1,1]
+            img = (img - 0.5) / 0.5
 
-            # 3. Zmiana układu osi i skalowanie
-            pytorch_image = np.transpose(resized_image, (2, 0, 1)) / 255.0
+            # HWC -> CHW
+            img = np.transpose(img, (2, 0, 1))
 
-            # 3. Zmiana układu osi (H, W, C) na (C, H, W) i skalowanie z 0-255 na 0.0-1.0
-            pytorch_image = (pytorch_image - mean) / std
-
-            data.append((fid, label, pytorch_image, path))
+            data.append((fid, label, img, path))
 
         return data
+
+    # def get_vgg_style_labeled_data_for_train(self, dataset: int = 1, is_test=0) -> list:
+    #     """Return training entries with manual labels."""
+    #
+    #     self._cursor.execute(
+    #         """
+    #         SELECT face_id, manual_label, image_path
+    #         FROM faces
+    #         WHERE dataset_id = ?
+    #           AND is_test = ?
+    #           AND ground_truth_label != 'None'
+    #         """,
+    #         (dataset, is_test)
+    #     )
+    #
+    #     rows = self._cursor.fetchall()
+    #     data = []
+    #
+    #     for fid, label, path in rows:
+    #         # OpenCV -> BGR
+    #         img = cv2.imread(path)  # BGR
+    #
+    #         img = cv2.resize(img, (224, 224))
+    #
+    #         img = img.astype(np.float32)
+    #
+    #         img[..., 0] -= 93.5940
+    #         img[..., 1] -= 104.7624
+    #         img[..., 2] -= 129.1863
+    #
+    #         img = np.transpose(img, (2, 0, 1))
+    #
+    #         data.append((fid, label, img, path))
+    #
+    #     return data
 
 
 

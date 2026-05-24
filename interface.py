@@ -32,15 +32,37 @@ class FaceCard(QFrame):
 
     confirmed = pyqtSignal(str, str)
 
-    def __init__(self, face_id, name, dataset, parent=None):
+    def __init__(self, face_id, name, dataset, is_prediction_ = False, parent=None):
         """Build a card for one detected face."""
         super().__init__(parent)
         self.face_id = face_id
         self.setFrameShape(QFrame.StyledPanel)
         self.setFixedWidth(160)
-        self.setStyleSheet("background-color: #2b2b2b; border-radius: 8px; border: 1px solid #3e3e3e;")
+
+        self.setObjectName("FaceCard")
+        color = "#0284c7" if is_prediction_ else "#2b2b2b"
+        self.setStyleSheet(f"""
+                #FaceCard {{
+                    background-color: {color}; 
+                    border-radius: 8px; 
+                    border: 1px solid #3e3e3e;
+                }}
+            """)
 
         layout = QVBoxLayout()
+
+        self.lbl_title = QLabel()
+        self.lbl_title.setText("PREDYKCJA" if is_prediction_ else "WZORZEC")
+        self.lbl_title.setAlignment(Qt.AlignCenter)
+        self.lbl_title.setStyleSheet("""
+                color: rgba(255, 255, 255, 0.8); 
+                font-size: 10px; 
+                font-weight: bold; 
+                letter-spacing: 1px;
+                background: transparent;
+                margin-top: 4px;
+            """)
+        layout.addWidget(self.lbl_title)
 
         self.lbl_img = QLabel()
         self.lbl_img.setAlignment(Qt.AlignCenter)
@@ -59,7 +81,7 @@ class FaceCard(QFrame):
         layout.addWidget(self.input_name)
 
         self.btn_confirm = QPushButton("Zmień / OK")
-        self.btn_confirm.setStyleSheet("background-color: #444; color: white; padding: 4px;")
+        self.btn_confirm.setStyleSheet(f"background-color: #444; color: white; padding: 4px;")
         self.btn_confirm.clicked.connect(self._on_confirm)
         layout.addWidget(self.btn_confirm)
 
@@ -267,7 +289,7 @@ class FaceInterface(QMainWindow):
         else:
             return -1
 
-    def refresh_classified_faces(self, face_data_list, callback, dataset):
+    def refresh_classified_faces(self, face_data_list, callback, dataset, is_prediction: bool = False):
         """Rebuild the grid from `(face_id, label, ...)` records."""
         for i in reversed(range(self.grid_layout.count())):
             widget = self.grid_layout.itemAt(i).widget()
@@ -278,7 +300,7 @@ class FaceInterface(QMainWindow):
             fid, name = self._parse_face_row(row)
             if not fid:
                 continue
-            card = FaceCard(fid, name, dataset)
+            card = FaceCard(fid, name, dataset, is_prediction_ = is_prediction)
             card.confirmed.connect(callback)
             self.grid_layout.addWidget(card, i // 6, i % 6)
 

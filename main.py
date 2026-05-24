@@ -12,13 +12,14 @@ import json
 
 import cv2
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QMessageBox # only for visualisation
 from sklearn.metrics import accuracy_score, classification_report, f1_score
 from tqdm import tqdm
 
 from config import Config
 from database import FaceDatabase
 from interface import FaceInterface
+
+from PyQt5.QtWidgets import QApplication, QMessageBox # only for visualisation
 
 
 class SmartLabelerController:
@@ -31,7 +32,7 @@ class SmartLabelerController:
         #GUI initialization
         self.ui = FaceInterface()
         self.ui.set_visualize_callback(self._on_generate_visualization_clicked)
-        self.dataset = self.ui.ask_for_scan_dataset_id("Etykietowanie", "Wybierz zestaw danych:")
+        self.dataset = self.ui.ask_for_scan_dataset_id("Zbiory danych", "Wybierz zestaw danych:")
         # 2. Przekazujemy ten sam obiekt (referencję) do ekstraktora
         self.extractor = FaceExtractor(self.config, self.db, self.dataset)
         self.preprocessor = FacePreprocessor(self.dataset, self.db,  self.config)
@@ -145,7 +146,7 @@ class SmartLabelerController:
 
         # wybor jedynie czesci zbioru do trenowania, ale nie wszystkich
         import random
-        unlabeled_data = random.sample(unlabeled_data, int(0.7 * len(unlabeled_data)))
+        unlabeled_data = random.sample(unlabeled_data, int(0.25 * len(unlabeled_data)))
 
         print("Number of unlabeled faces in database -- train:\t", len(unlabeled_data))
         if not unlabeled_data:
@@ -204,21 +205,21 @@ class SmartLabelerController:
 
         print("Mean number of fids per label: ", mean_fids_per_label)
 
-        #limitowanie dlugosci grupy
-        new_test_data = []
-        for label, group in labels_groups.items():
-            labels_groups[label] = group[:int(mean_fids_per_label * 10.0)]
-            new_test_data.extend(group[int(mean_fids_per_label * 10.0):])
-            print("Zostawiam w grupie testowej dla etykiety: ", label, " ", len(group[int(mean_fids_per_label * 10.0):]), "")
+        # #limitowanie dlugosci grupy
+        # new_test_data = []
+        # for label, group in labels_groups.items():
+        #     labels_groups[label] = group[:int(mean_fids_per_label * 10.0)]
+        #     new_test_data.extend(group[int(mean_fids_per_label * 10.0):])
+        #     print("Zostawiam w grupie testowej dla etykiety: ", label, " ", len(group[int(mean_fids_per_label * 10.0):]), "")
 
         # Konwersja wartości słownika na listę krotek
         train_data = []
         for groups in labels_groups.values():
             train_data.extend(groups)
 
-        print("Dodatkowe dane do zbioru test: ", len(new_test_data))
-        to_test = [data[0] for data in new_test_data]
-        self.db.mark_as_test(self.dataset, to_test)
+        # print("Dodatkowe dane do zbioru test: ", len(new_test_data))
+        # to_test = [data[0] for data in new_test_data]
+        # self.db.mark_as_test(self.dataset, to_test)
 
         return train_data
 
@@ -274,7 +275,7 @@ class SmartLabelerController:
 
         num_classes = len(unique_names)
 
-        vgg_classifier = VGGClassifier(self.config, num_classes, idx_to_class, num_epochs_ = 15)
+        vgg_classifier = VGGClassifier(self.config, num_classes, idx_to_class, num_epochs_ = 80)
         train_labels_idx = [class_to_idx[name] for name in train_labels]
 
         # Rzutujemy krotki (tuples) z funkcji zip na tablice numpy
@@ -354,6 +355,9 @@ class SmartLabelerController:
 
             acc = accuracy_score(y_true_eval, y_pred_eval)
             f1 = f1_score(y_true_eval, y_pred_eval, average="weighted", zero_division=0)
+            if y_pred_eval is None:
+                print("y_pred_eval is None")
+                return False
             report = classification_report(y_true_eval, y_pred_eval, zero_division=0)
             avg_conf = sum(confidences) / len(confidences) if confidences is not None else 0
         else:
@@ -382,7 +386,7 @@ class SmartLabelerController:
         for fid, pred in zip(fids, y_pred):
             self.db.set_svm_prediction(fid, pred, dataset=self.dataset)
 
-        # Przygotowanie listy dla UI: (fid, "Imię (98%)") lub (fid, "Imię")
+        # Przygotowanie listy dla UI: (fid, "Imię (... %)") lub (fid, "Imię")
         classified_for_ui = []
         if confidences is not None:
             for fid, name, conf in zip(fids, y_pred, confidences):
@@ -393,7 +397,7 @@ class SmartLabelerController:
                 display_text = f"{name}"
                 classified_for_ui.append((fid, display_text))
 
-        self.ui.refresh_classified_faces(classified_for_ui, self._manual_fix_callback, self.dataset)
+        self.ui.refresh_classified_faces(classified_for_ui, self._manual_fix_callback, self.dataset, is_prediction = True)
         self.ui.set_visualization_enabled(True)
 
         return True
@@ -469,7 +473,7 @@ class SmartLabelerController:
         elif mode == "cancel":
             return
 
-        self.refresh_main_view()
+        # self.refresh_main_view()
         sys.exit(self.ui.app.exec_())
 
 
@@ -568,7 +572,7 @@ class SmartLabelerController:
 
             cv2.rectangle(img, (x1, y1), (x2, y2), box_color, thickness)
 
-            source_tag = "[MANUAL]" if bool(is_manual) else "[SVM]"
+            source_tag = "[MANUAL]" if bool(is_manual) else "[PREDICTION]"
             label_text = f"{source_tag} {str(label or 'Unknown').upper()}"
 
             (lbl_w, lbl_h), _ = cv2.getTextSize(label_text, font, font_scale, font_thickness)

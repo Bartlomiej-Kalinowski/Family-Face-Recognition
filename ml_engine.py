@@ -1,15 +1,20 @@
 ﻿"""Machine-learning components for face extraction, clustering, and classification."""
+import copy
 import math
 import sys
+from collections import Counter
+
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
+from sklearn.model_selection import KFold, train_test_split
 from torch import optim
 
 from database import FaceDatabase
 
 try:
     import torch
+    from facenet_pytorch import InceptionResnetV1
     from ultralytics import YOLO
 
     _ = torch.empty(1)
@@ -29,7 +34,7 @@ from sklearn.decomposition import IncrementalPCA
 from sklearn.neighbors import BallTree
 import torch.nn as nn
 from torchvision import models
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, Subset
 import torch.nn.functional as F
 
 
@@ -420,65 +425,305 @@ class KNNclassifier:
                 most_common_label = counts.most_common(1)[0][0]
                 predictions.append(most_common_label)
 
-        print("Typ predykcji zwracanej przez KNN: ", type(predictions))
+        print("Typ predykcji zwracanej przez KNN: ", type(predictions), " ", predictions[0])
         return predictions, None
 
 
-class LoRALinear(nn.Module):
-    def __init__(self, linear_layer, rank=8, alpha=16):
-        super().__init__()
-        self.linear = linear_layer
-        self.rank = rank
-        self.alpha = alpha
-        self.scaling = alpha / rank
+# class LoRALinear(nn.Module):
+#     def __init__(self, linear_layer, rank=8, alpha=16):
+#         super().__init__()
+#         self.linear = linear_layer
+#         self.rank = rank
+#         self.alpha = alpha
+#         self.scaling = alpha / rank
+#
+#         # Zamrażamy oryginalne wagi warstwy Linear
+#         for param in self.linear.parameters():
+#             param.requires_grad = False
+#
+#         in_features = linear_layer.in_features
+#         out_features = linear_layer.out_features
+#
+#         # Nowe parametry LoRA (tylko one będą trenowane)
+#         self.lora_A = nn.Parameter(torch.randn(in_features, rank) * 0.01, requires_grad=True)
+#         self.lora_B = nn.Parameter(torch.zeros(rank, out_features), requires_grad=True)
+#
+#     def forward(self, x):
+#         # Oryginalny wynik + ścieżka LoRA
+#         return self.linear(x) + (x @ self.lora_A @ self.lora_B) * self.scaling
 
-        # Zamrażamy oryginalne wagi warstwy Linear
-        for param in self.linear.parameters():
-            param.requires_grad = False
+# class VGGClassifier(nn.Module):
+#     """VGG classifier for face classification."""
+#
+#     def __init__(self, cf, num_classes, idx_to_class ,num_epochs_ = 5, rank=8, alpha=16):
+#         super(VGGClassifier, self).__init__()
+#         self.vgg_face_model = models.vgg16(weights=None) # nie pobieramy wag bo zastapimy je dedykowanymi dla twarzy
+#         try:
+#             state_dict = torch.load(cf.VGG_FACE_WEIGHTS_PATH)
+#             mapping = {
+#                 'conv1_1.weight': 'features.0.weight',
+#                 'conv1_1.bias': 'features.0.bias',
+#
+#                 'conv1_2.weight': 'features.2.weight',
+#                 'conv1_2.bias': 'features.2.bias',
+#
+#                 'conv2_1.weight': 'features.5.weight',
+#                 'conv2_1.bias': 'features.5.bias',
+#
+#                 'conv2_2.weight': 'features.7.weight',
+#                 'conv2_2.bias': 'features.7.bias',
+#
+#                 'conv3_1.weight': 'features.10.weight',
+#                 'conv3_1.bias': 'features.10.bias',
+#
+#                 'conv3_2.weight': 'features.12.weight',
+#                 'conv3_2.bias': 'features.12.bias',
+#
+#                 'conv3_3.weight': 'features.14.weight',
+#                 'conv3_3.bias': 'features.14.bias',
+#
+#                 'conv4_1.weight': 'features.17.weight',
+#                 'conv4_1.bias': 'features.17.bias',
+#
+#                 'conv4_2.weight': 'features.19.weight',
+#                 'conv4_2.bias': 'features.19.bias',
+#
+#                 'conv4_3.weight': 'features.21.weight',
+#                 'conv4_3.bias': 'features.21.bias',
+#
+#                 'conv5_1.weight': 'features.24.weight',
+#                 'conv5_1.bias': 'features.24.bias',
+#
+#                 'conv5_2.weight': 'features.26.weight',
+#                 'conv5_2.bias': 'features.26.bias',
+#
+#                 'conv5_3.weight': 'features.28.weight',
+#                 'conv5_3.bias': 'features.28.bias',
+#
+#                 'fc6.weight': 'classifier.0.weight',
+#                 'fc6.bias': 'classifier.0.bias',
+#
+#                 'fc7.weight': 'classifier.3.weight',
+#                 'fc7.bias': 'classifier.3.bias',
+#             }
+#             new_state_dict = {}
+#
+#             for old_key, new_key in mapping.items():
+#                 if old_key in state_dict:
+#                     new_state_dict[new_key] = state_dict[old_key]
+#
+#             missing, unexpected = self.vgg_face_model.load_state_dict(
+#                 state_dict,
+#                 strict=False
+#             )
+#
+#             print("MISSING:", missing)
+#             print("UNEXPECTED:", unexpected)
+#             print("Zaladowano oryginalne wagi VGG-Face.")
+#         except:
+#             print("Nie znaleziono pliku wag VGG-Face. Ladowanie domyslnych wag ImageNet...")
+#             self.vgg_face_model = models.vgg16(weights=models.VGG16_Weights.DEFAULT)
+#
+#         for param in self.vgg_face_model.parameters(): # freezes all convolutional layers
+#             param.requires_grad = False
+#         in_features = self.vgg_face_model.classifier[6].in_features # classifier[6] is the last fully connected layer
+#         print("Model:\n", self.vgg_face_model)
+#         self.vgg_face_model.classifier[6] = nn.Sequential(
+#             nn.Linear(in_features, num_classes)
+#         )
+#
+#         self.num_classes = num_classes
+#         self.num_epochs = num_epochs_
+#         self.idx_to_class = idx_to_class
+#
+#
+    # def prepare_data(self, x_train, y_train, batch_size=16):
+    #
+    #     print("X_train shape: ", len(x_train), "Y_train shape: ", len(y_train))
+    #     # 1. Konwersja na Tensory
+    #     # x_train: [liczba_zdjec, kanały, wysokość, szerokość]
+    #     # y_train: [liczba_zdjec] (liczby całkowite)
+    #     x_tensor = torch.tensor(x_train, dtype=torch.float32)
+    #     y_tensor = torch.tensor(y_train, dtype=torch.long)
+    #
+    #     # 2. Stworzenie obiektu Dataset (paczka cechy + etykiety)
+    #     dataset = TensorDataset(x_tensor, y_tensor)
+    #
+    #     return dataset
+#
+#     def forward(self, x):
+#         # Definiujemy jak dane płyną przez sieć
+#         return self.vgg_face_model(x)
+#
+#     def fit(self, x_train, y_train, patience=4):
+#
+#         # 1. Sztywny podział danych na Train (80%) i Val/Eval (20%) w pamięci RAM
+#         # Parametr stratify=should_stratify gwarantuje, że każda osoba będzie miała
+#         # reprezentację (zdjęcia) zarówno w zbiorze treningowym, jak i walidacyjnym.
+#         counter_dict = dict()
+#         unique_labels = set(y_train)
+#         for label in unique_labels:
+#             counter_dict[label] = 0
+#             for y in y_train:
+#                 if y == label:
+#                     counter_dict[label] += 1
+#         min_samples = min(counter_dict.values())
+#         if min_samples < 2:
+#             should_stratify = None
+#         else:
+#             should_stratify = y_train
+#
+#         x_tr, x_val, y_tr, y_val = train_test_split(
+#             x_train, y_train, test_size=0.20, random_state=42, stratify=should_stratify
+#         )
+#
+#         class_counts = Counter(y_tr)
+#
+#         weights = torch.tensor(
+#             [1.0 / class_counts.get(i, 1) for i in range(self.num_classes)],
+#             dtype=torch.float32
+#         )
+#
+#         criterion = nn.CrossEntropyLoss(weight=weights)
+#
+#         # 2. Przygotowanie TensorDataset dla obu podzbiorów
+#         train_dataset = self.prepare_data(x_tr, y_tr)
+#         val_dataset = self.prepare_data(x_val, y_val)
+#
+#         # 3. Stworzenie DataLoaderów
+#         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+#         val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+#
+#         # 4. Optymalizator (trenujemy wyłącznie parametry z requires_grad=True - LoRA)
+#         optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=1e-4)
+#
+#         # Zmienne pomocnicze do monitorowania Early Stopping i zapisu wag
+#         best_model_wts = copy.deepcopy(self.vgg_face_model.state_dict())
+#         best_val_loss = float('inf')
+#         patience_counter = 0  # Licznik epok bez poprawy błędu
+#
+#         print(f"\nRozpoczynanie treningu (Maksymalna liczba epok: {self.num_epochs})")
+#         print(f"Rozmiar zbioru treningowego: {len(x_tr)} | Walidacyjnego: {len(x_val)}")
+#         print("-" * 60)
+#
+#         for epoch in range(self.num_epochs):
+#             # --- faza treningu---
+#             self.vgg_face_model.train()  #  tryb treningowy
+#             running_train_loss = 0.0
+#
+#             for inputs, labels in train_loader:
+#                 optimizer.zero_grad()
+#                 outputs = self.vgg_face_model(inputs)
+#                 loss = criterion(outputs, labels)
+#                 loss.backward()
+#                 optimizer.step()
+#                 running_train_loss += loss.item()
+#
+#             epoch_train_loss = running_train_loss / len(train_loader)
+#
+#             # --- faza walidacji ---
+#             self.vgg_face_model.eval()
+#             running_val_loss = 0.0
+#
+#             with torch.no_grad():
+#                 for inputs, labels in val_loader:
+#                     outputs = self.vgg_face_model(inputs)
+#                     loss = criterion(outputs, labels)
+#                     running_val_loss += loss.item()
+#
+#             epoch_val_loss = running_val_loss / len(val_loader)
+#
+#             # Wypisanie logów dla bieżącej epoki
+#             print(f"Epoch {epoch + 1:02d}/{self.num_epochs} | "
+#                   f"Train Loss: {epoch_train_loss:.4f} | "
+#                   f"Val Loss: {epoch_val_loss:.4f}", end="")
+#
+#             # early stopping
+#             if epoch_val_loss < best_val_loss:
+#                 best_val_loss = epoch_val_loss
+#                 best_model_wts = copy.deepcopy(self.vgg_face_model.state_dict())
+#                 patience_counter = 0  # Reset licznika, bo znaleźliśmy lepszy punkt
+#                 print(" -> [Zapisano najlepszy model]")
+#             else:
+#                 patience_counter += 1  # Brak poprawy, zwiększamy licznik cierpliwości
+#                 print(f" -> [Brak poprawy od {patience_counter} epok]")
+#
+#             # Sprawdzenie warunku stopu
+#             if patience_counter >= patience:
+#                 print(f"\n Early Stopping! Brak poprawy błędu walidacji przez {patience} kolejnych epok. Przerywam.")
+#                 break
+#
+#         # 5. Przywrócenie wag z momentu, w którym Val Loss był najniższy
+#         print(f"\nTrening zakończony. Przywracanie najlepszych wag (Najniższy Val Loss: {best_val_loss:.4f})")
+#         self.vgg_face_model.load_state_dict(best_model_wts)
+#
+#
+#     def predict_unlabeled(self, x_test, threshold = 0.000001):
+#
+#         print("X_test shape: ", len(x_test), "threshold: ", threshold)
+#         self.vgg_face_model.eval() # test mode, without dropout
+#         predicted_names = []
+#
+#         x_tensor = torch.tensor(x_test, dtype=torch.float32)
+#         test_loader = DataLoader(TensorDataset(x_tensor), batch_size=32, shuffle=False)
+#
+#
+#         with torch.no_grad():  # nie liczymy gradientow podczas testu
+#             for inputs in tqdm(test_loader, "Ocena skutecznosci modelu"):
+#                 outputs = self.vgg_face_model(inputs[0])
+#                 probabilities = F.softmax(outputs, dim=1)
+#
+#                 # 2. Pobranie najwyższego prawdopodobieństwa i jego indeksu
+#                 max_probs, predicted_indices = torch.max(probabilities, 1)
+#
+#                 # 3. Sprawdzanie progu (Threshold) dla każdego zdjęcia
+#                 for prob, idx in zip(max_probs, predicted_indices):
+#                     # Sprawdzamy, czy model jest pewny swego
+#                     if prob.item() >= threshold:
+#                         name = self.idx_to_class[idx.item()]
+#                     else:
+#                         name = "Nieznana osoba"  # Model jest zbyt niepewny
+#
+#                     predicted_names.append((name, prob))
+#
+#             print("Typ predykcji zwracanej przez vgg: ", type(predicted_names), " ", predicted_names[0])
+#             return predicted_names
 
-        in_features = linear_layer.in_features
-        out_features = linear_layer.out_features
 
-        # Nowe parametry LoRA (tylko one będą trenowane)
-        self.lora_A = nn.Parameter(torch.randn(in_features, rank) * 0.01, requires_grad=True)
-        self.lora_B = nn.Parameter(torch.zeros(rank, out_features), requires_grad=True)
 
-    def forward(self, x):
-        # Oryginalny wynik + ścieżka LoRA
-        return self.linear(x) + (x @ self.lora_A @ self.lora_B) * self.scaling
 
 class VGGClassifier(nn.Module):
-    """VGG classifier for face classification."""
 
-    def __init__(self, cf, num_classes, idx_to_class ,num_epochs_ = 5, rank=8, alpha=16):
-        super(VGGClassifier, self).__init__()
-        self.vgg_face_model = models.vgg16(weights=None) # nie pobieramy wag bo zastapimy je dedykowanymi dla twarzy
-        try:
-            state_dict = torch.load(cf.VGG_FACE_WEIGHTS_PATH)
-            self.vgg_face_model.load_state_dict(state_dict, strict=False)
-            print("Zaladowano oryginalne wagi VGG-Face.")
-        except:
-            print("Nie znaleziono pliku wag VGG-Face. Ladowanie domyslnych wag ImageNet...")
-            self.vgg_face_model = models.vgg16(weights=models.VGG16_Weights.DEFAULT)
+    def __init__(self, cf, num_classes, idx_to_class, num_epochs_=5):
+        super().__init__()
 
-        for param in self.vgg_face_model.parameters(): # freezes all convolutional layers
-            param.requires_grad = False
-        in_features = self.vgg_face_model.classifier[6].in_features # classifier[6] is the last fully connected layer
-        self.vgg_face_model.classifier[6] = nn.Linear(in_features, num_classes)
-
-        # 4. Opakowujemy tę nową warstwę w LoRA
-        # Dzięki temu będziemy trenować tylko macierze A i B dla ostatniej warstwy
-        self.vgg_face_model.classifier[6] = LoRALinear(
-            self.vgg_face_model.classifier[6],
-            rank=rank,
-            alpha=alpha
-        )
         self.num_classes = num_classes
-        self.num_epochs = num_epochs_
+
+        self.model = InceptionResnetV1(pretrained='vggface2')
+
+        # freeze backbone
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        # classifier
+        self.classifier = nn.Linear(512, self.num_classes)
+
+        # self.classifier = nn.Sequential(
+        #     nn.Linear(512, 256),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.5),
+        #     nn.Linear(256, self.num_classes)
+        # )
+
         self.idx_to_class = idx_to_class
+        self.num_epochs = num_epochs_
 
+    def forward(self, x):
+        embeddings = self.model(x)      # [B, 512]
+        logits = self.classifier(embeddings)  # [B, self.num_classes]
+        return logits
 
-    def prepare_data(self, x_train, y_train, batch_size=16):
+    def prepare_data(self, x_train, y_train):
 
         print("X_train shape: ", len(x_train), "Y_train shape: ", len(y_train))
         # 1. Konwersja na Tensory
@@ -490,63 +735,137 @@ class VGGClassifier(nn.Module):
         # 2. Stworzenie obiektu Dataset (paczka cechy + etykiety)
         dataset = TensorDataset(x_tensor, y_tensor)
 
-        # 3. Stworzenie DataLoadera
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        return dataset
 
-        return loader
+    def fit(self, x_train, y_train, patience=3):
 
-    def forward(self, x):
-        # Definiujemy jak dane płyną przez sieć
-        return self.vgg_face_model(x)
+        # 1. Sztywny podział danych na Train (80%) i Val/Eval (20%) w pamięci RAM
+        # Parametr stratify=should_stratify gwarantuje, że każda osoba będzie miała
+        # reprezentację (zdjęcia) zarówno w zbiorze treningowym, jak i walidacyjnym.
+        counter_dict = dict()
+        unique_labels = set(y_train)
+        for label in unique_labels:
+            counter_dict[label] = 0
+            for y in y_train:
+                if y == label:
+                    counter_dict[label] += 1
+        min_samples = min(counter_dict.values())
+        if min_samples < 2:
+            should_stratify = None
+        else:
+            should_stratify = y_train
 
-    def fit(self, x_train, y_train):
-        criterion = nn.CrossEntropyLoss()
-        # Optymalizator widzi tylko parametry z requires_grad=True
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=0.001)
+        x_tr, x_val, y_tr, y_val = train_test_split(
+            x_train, y_train, test_size=0.20, random_state=42, stratify=should_stratify
+        )
 
-        # 2. Pętla treningowa
-        train_loader = self.prepare_data(x_train, y_train)
-        self.vgg_face_model.train()
+        class_counts = Counter(y_tr)
+
+        weights = torch.tensor(
+            [1.0 / class_counts.get(i, 1) for i in range(self.num_classes)],
+            dtype=torch.float32
+        )
+
+        criterion = nn.CrossEntropyLoss(weight=weights)
+
+        # 2. Przygotowanie TensorDataset dla obu podzbiorów
+        train_dataset = self.prepare_data(x_tr, y_tr)
+        val_dataset = self.prepare_data(x_val, y_val)
+
+        # 3. Stworzenie DataLoaderów
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+        # 4. Optymalizator (trenujemy wyłącznie parametry z requires_grad=True - LoRA)
+        optimizer = optim.Adam(self.classifier.parameters(), lr=1e-3)
+
+        # Zmienne pomocnicze do monitorowania Early Stopping i zapisu wag
+        best_model_wts = copy.deepcopy(self.model.state_dict())
+        best_val_loss = float('inf')
+        patience_counter = 0  # Licznik epok bez poprawy błędu
+
+        print(f"\nRozpoczynanie treningu (Maksymalna liczba epok: {self.num_epochs})")
+        print(f"Rozmiar zbioru treningowego: {len(x_tr)} | Walidacyjnego: {len(x_val)}")
+        print("-" * 60)
+
         for epoch in range(self.num_epochs):
-            running_loss = 0.0
-            for inputs, labels in train_loader:
+            # --- faza treningu---
+            self.model.train()  #  tryb treningowy
+            running_train_loss = 0.0
+
+            for inputs, labels in tqdm(train_loader, "Trenowanie modelu"):
                 optimizer.zero_grad()
-                outputs = self.vgg_face_model(inputs)
+                outputs = self.forward(inputs)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
-                running_loss += loss.item()
-            print(f"Epoch {epoch + 1}/{self.num_epochs}, Loss: {running_loss / len(train_loader)}")
+                running_train_loss += loss.item()
 
-    def predict_unlabeled(self, x_test, threshold = 0.03):
+            epoch_train_loss = running_train_loss / len(train_loader)
 
-        print("X_test shape: ", len(x_test), "threshold: ", threshold)
-        self.vgg_face_model.eval() # test mode, without dropout
+            # --- faza walidacji ---
+            self.model.eval()
+            running_val_loss = 0.0
+
+            with torch.no_grad():
+                for inputs, labels in tqdm(val_loader, "Walidacja modelu"):
+                    outputs = self.forward(inputs)
+                    loss = criterion(outputs, labels)
+                    running_val_loss += loss.item()
+
+            epoch_val_loss = running_val_loss / len(val_loader)
+
+            # Wypisanie logów dla bieżącej epoki
+            print(f"Epoch {epoch + 1:02d}/{self.num_epochs} | "
+                  f"Train Loss: {epoch_train_loss:.4f} | "
+                  f"Val Loss: {epoch_val_loss:.4f}", end="", flush = True)
+
+            # early stopping
+            if epoch_val_loss < best_val_loss:
+                best_val_loss = epoch_val_loss
+                best_model_wts = copy.deepcopy(self.model.state_dict())
+                patience_counter = 0  # Reset licznika, bo znaleźliśmy lepszy punkt
+                print(" -> [Zapisano najlepszy model]")
+            else:
+                patience_counter += 1  # Brak poprawy, zwiększamy licznik cierpliwości
+                print(f" -> [Brak poprawy od {patience_counter} epok]")
+
+            # Sprawdzenie warunku stopu
+            if patience_counter >= patience:
+                print(f"\n Early Stopping! Brak poprawy błędu walidacji przez {patience} kolejnych epok. Przerywam.")
+                break
+
+        # 5. Przywrócenie wag z momentu, w którym Val Loss był najniższy
+        print(f"\nTrening zakończony. Przywracanie najlepszych wag (Najniższy Val Loss: {best_val_loss:.4f})")
+        self.model.load_state_dict(best_model_wts)
+
+    def predict_unlabeled(self, x_test, threshold=0.03):
+
+        self.eval()
         predicted_names = []
-
         x_tensor = torch.tensor(x_test, dtype=torch.float32)
-        test_loader = DataLoader(TensorDataset(x_tensor), batch_size=32, shuffle=False)
+        test_loader = DataLoader(
+            TensorDataset(x_tensor),
+            batch_size=32,
+            shuffle=False
+        )
 
-
-        with torch.no_grad():  # nie liczymy gradientow podczas testu
-            for inputs in tqdm(test_loader, "Ocena skutecznosci modelu"):
-                outputs = self.vgg_face_model(inputs[0])
+        with torch.no_grad():
+            for inputs in test_loader:
+                outputs = self.forward(inputs[0])
                 probabilities = F.softmax(outputs, dim=1)
-
-                # 2. Pobranie najwyższego prawdopodobieństwa i jego indeksu
                 max_probs, predicted_indices = torch.max(probabilities, 1)
-
-                # 3. Sprawdzanie progu (Threshold) dla każdego zdjęcia
                 for prob, idx in zip(max_probs, predicted_indices):
-                    # Sprawdzamy, czy model jest pewny swego
                     if prob.item() >= threshold:
                         name = self.idx_to_class[idx.item()]
                     else:
-                        name = "Nieznana osoba"  # Model jest zbyt niepewny
+                        name = "Nieznana osoba"
 
-                    predicted_names.append((name, prob))
+                    predicted_names.append((name, prob.item()))
 
-            return predicted_names
+        return predicted_names
+
+
 
 
 
