@@ -146,7 +146,7 @@ class SmartLabelerController:
 
         # wybor jedynie czesci zbioru do trenowania, ale nie wszystkich
         import random
-        unlabeled_data = random.sample(unlabeled_data, int(0.25 * len(unlabeled_data)))
+        unlabeled_data = random.sample(unlabeled_data, int(0.88 * len(unlabeled_data)))
 
         print("Number of unlabeled faces in database -- train:\t", len(unlabeled_data))
         if not unlabeled_data:
@@ -157,10 +157,10 @@ class SmartLabelerController:
         embeddings = np.array([item[1] for item in unlabeled_data])
         clusters = self.classifier.get_face_clusters(embeddings, fids)  # dict of {"label1": [fid1, fid2, ...], ...}
 
-        mode = input("Testowy tryb(1), tryb normalny - okienkowy(0): ")
-        if mode == "1":
+        mode = self.ui.ask_for_test_mode()
+        if mode == "test":
             self.db.assing_manual_labels_directly_from_ground_truth(dataset=self.dataset, data = unlabeled_data)
-        else:
+        elif mode == "manual":
             # cid - cluster id - label
             # cfids - list of fids
             # valid clusters is clusters without too small clusters
@@ -176,6 +176,9 @@ class SmartLabelerController:
 
                 # Przekazujemy pary do funkcji bulk
                 self.process_bulk_selection(cluster_fids_and_paths)
+        else:
+            print("Przerwano dzialanie programu")
+            exit(0)
 
         # number of manual labels after DBSCAN
         faces_labeled = self.db.get_labeled_data_for_train(dataset=self.dataset)
@@ -275,7 +278,7 @@ class SmartLabelerController:
 
         num_classes = len(unique_names)
 
-        vgg_classifier = VGGClassifier(self.config, num_classes, idx_to_class, num_epochs_ = 80)
+        vgg_classifier = VGGClassifier(self.config, num_classes, idx_to_class, num_epochs_ = 500)
         train_labels_idx = [class_to_idx[name] for name in train_labels]
 
         # Rzutujemy krotki (tuples) z funkcji zip na tablice numpy
@@ -543,10 +546,11 @@ class SmartLabelerController:
 
             h, w, _ = img.shape
 
-            box_color = (60, 170, 75) if bool(is_manual) else (200, 140, 70)
-            label_bg = (26, 26, 26)
-            text_color = (245, 245, 245)
-            thickness = max(1, min(3, int(min(h, w) / 450)))
+            # Kolory w formacie BGR (Blue, Green, Red)
+            box_color = (0, 215, 0) if bool(is_manual) else (255, 140, 0) # zielony + bledkitny
+            label_bg = (0, 0, 0)  # czarny
+            text_color = (255, 255, 255)
+            thickness = max(2, min(4, int(min(h, w) / 300)))
             font = cv2.FONT_HERSHEY_SIMPLEX
 
             # Draw stored YOLO bbox on the original image.
@@ -567,8 +571,8 @@ class SmartLabelerController:
                 continue
 
             bbox_height = max(1, y2 - y1)
-            font_scale = max(0.35, min(0.62, bbox_height / 230))
-            font_thickness = max(1, int(round(font_scale * 2)))
+            font_scale = max(1.0 , min(0.85, bbox_height / 180))
+            font_thickness = max(1, int(round(font_scale * 2.5)))
 
             cv2.rectangle(img, (x1, y1), (x2, y2), box_color, thickness)
 
@@ -576,26 +580,33 @@ class SmartLabelerController:
             label_text = f"{source_tag} {str(label or 'Unknown').upper()}"
 
             (lbl_w, lbl_h), _ = cv2.getTextSize(label_text, font, font_scale, font_thickness)
+
+            pad_x = 15  # O ile pikseli prostokąt ma wystawać w lewo i w prawo poza tekst
+            pad_y = 12  # O ile pikseli prostokąt ma wystawać w górę i w dół poza tekst
+
             label_x = x1
-            label_y = max(lbl_h + 10, y1)
-            cv2.rectangle(
-                img,
-                (label_x, label_y - lbl_h - 10),
-                (min(label_x + lbl_w + 10, w - 1), label_y),
-                label_bg,
-                -1,
-            )
-            cv2.rectangle(
-                img,
-                (label_x, label_y - lbl_h - 10),
-                (min(label_x + lbl_w + 10, w - 1), label_y),
-                box_color,
-                1,
-            )
+            # Obliczamy bezpieczną pozycję pionową, uwzględniając powiększone tło
+            label_y = max(lbl_h + pad_y * 2, y1)
+
+            # Współrzędne lewego górnego rogu prostokąta tła
+            bg_x1 = label_x
+            bg_y1 = label_y - lbl_h - (pad_y * 2)
+
+            # Współrzędne prawego dolnego rogu prostokąta tła
+            bg_x2 = min(label_x + lbl_w + (pad_x * 2), w - 1)
+            bg_y2 = label_y
+
+            # 1. Rysowanie czarnego tła (wypełniony prostokąt)
+            cv2.rectangle(img, (bg_x1, bg_y1), (bg_x2, bg_y2), label_bg, -1)
+
+            # 2. Rysowanie obwódki wokół tła (z grubością dopasowaną do ogólnej grubości linii)
+            border_thickness = max(1, thickness - 1)
+            cv2.rectangle(img, (bg_x1, bg_y1), (bg_x2, bg_y2), box_color, border_thickness)
+
             cv2.putText(
                 img,
                 label_text,
-                (label_x + 5, label_y - 5),
+                (label_x + 5, label_y - 7),
                 font,
                 font_scale,
                 text_color,

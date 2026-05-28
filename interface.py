@@ -105,7 +105,7 @@ class FaceInterface(QMainWindow):
             self._setup_dark_theme()
 
         super().__init__()
-        self.setWindowTitle("Face Recognition - Panel Weryfikacji SVM")
+        self.setWindowTitle("Rozpoznawanie twarzy - Panel Weryfikacji klasyfikatora")
         self.resize(1300, 900)
         self._init_ui()
         self.show()
@@ -129,7 +129,7 @@ class FaceInterface(QMainWindow):
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
 
-        header = QLabel("WYNIKI AUTOMATYCZNEJ KLASYFIKACJI (SVM)")
+        header = QLabel("WYNIKI AUTOMATYCZNEJ KLASYFIKACJI")
         header.setFont(QFont("Segoe UI", 16, QFont.Bold))
         header.setStyleSheet("color: #007acc; margin: 10px;")
         layout.addWidget(header)
@@ -215,6 +215,24 @@ class FaceInterface(QMainWindow):
             return "incremental"
         if msg.clickedButton() == exist_btn:
             return "use_existing"
+        return "cancel"
+
+    def ask_for_test_mode(self):
+        """Ask the user if they want to label train dataset manually
+        or get the train set by choose faces and ground truth labels randomly from teh database."""
+        msg = QMessageBox()
+        msg.setWindowTitle("Tryb etykietowania")
+        msg.setText("Wybierz sposób na zbudowanie zbioru treningowego")
+        test_btn = msg.addButton("Test modeli (losowy wybór twarzy z bazy danych)", QMessageBox.ActionRole)
+        manual_btn = msg.addButton("Manualne etykietowanie (DBSCAN)", QMessageBox.ActionRole)
+        msg.addButton("Anuluj", QMessageBox.RejectRole)
+
+        msg.exec_()
+
+        if msg.clickedButton() == test_btn:
+            return "test"
+        if msg.clickedButton() == manual_btn:
+            return "manual"
         return "cancel"
 
     def ask_for_preprocessing_type(self, dataset: int = 1):
