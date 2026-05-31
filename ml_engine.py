@@ -283,7 +283,7 @@ class FaceExtractor:
 
 
 class FaceClusterer:
-    """Cluster unlabeled faces and run multi-class SVM classification."""
+    """Cluster unlabeled faces"""
 
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
         """Group unlabeled embeddings using DBSCAN with cosine distance."""
@@ -475,7 +475,7 @@ class VGGClassifier(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(512, 256),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
+            nn.Dropout(0.05),
             nn.Linear(256, self.num_classes)
         )
 
@@ -603,7 +603,7 @@ class VGGClassifier(nn.Module):
         print(f"\nTrening zakończony. Przywracanie najlepszych wag (Najniższy Val Loss: {best_val_loss:.4f})")
         self.model.load_state_dict(best_model_wts)
 
-    def predict_unlabeled(self, x_test, threshold=0.1):
+    def predict_unlabeled(self, x_test, threshold=0.5):
 
         self.eval()
         predicted_names = []

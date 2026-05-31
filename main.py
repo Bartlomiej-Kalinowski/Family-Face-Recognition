@@ -138,6 +138,37 @@ class SmartLabelerController:
         #     exit(0)
         self.preprocessor.compute_embedding_from_crop()
 
+    def vgg_preprocessing(self, rows):
+        data = []
+
+        for fid, label, path in rows:
+
+            img = cv2.imread(path)
+
+            if img is None:
+                continue
+
+            # BGR -> RGB
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            # resize
+            img = cv2.resize(img, (160, 160))
+
+            # float32
+            img = img.astype(np.float32)
+
+            # [0,255] -> [0,1]
+            img /= 255.0
+
+            # [0,1] -> [-1,1]
+            img = (img - 0.5) / 0.5
+
+            # HWC -> CHW
+            img = np.transpose(img, (2, 0, 1))
+
+            data.append((fid, label, img, path))
+        return data
+
 
 
     def run_clustering_phase(self) -> dict:
@@ -146,7 +177,7 @@ class SmartLabelerController:
 
         # wybor jedynie czesci zbioru do trenowania, ale nie wszystkich
         import random
-        unlabeled_data = random.sample(unlabeled_data, int(0.88 * len(unlabeled_data)))
+        unlabeled_data = random.sample(unlabeled_data, int(0.25 * len(unlabeled_data)))
 
         print("Number of unlabeled faces in database -- train:\t", len(unlabeled_data))
         if not unlabeled_data:
@@ -232,6 +263,7 @@ class SmartLabelerController:
 
         if classifier == "VGG_face":
             train_data = self.db.get_vgg_style_labeled_data_for_train(dataset=self.dataset)
+            train_data = self.vgg_preprocessing(train_data)
             if balance_classes:
                 train_data = self.calculate_mean_labels_group_size_and_limit_group_size(train_data)
             print("Dlugosc danych treningowych: ", len(train_data))
@@ -298,6 +330,7 @@ class SmartLabelerController:
             print("[INFO] Wykryto model VGG. Przygotowanie obrazów...")
             # Zakładamy, że metoda zwraca: fid, label, image, path
             test_data = self.db.get_vgg_style_labeled_data_for_train(dataset=self.dataset, is_test=1)
+            test_data = self.vgg_preprocessing(test_data)
 
             if not test_data:
                 print("[INFO] Brak danych testowych dla VGG.")
@@ -547,13 +580,13 @@ class SmartLabelerController:
             h, w, _ = img.shape
 
             # Kolory w formacie BGR (Blue, Green, Red)
-            box_color = (0, 215, 0) if bool(is_manual) else (255, 140, 0) # zielony + bledkitny
+            box_color = (0, 215, 0) if bool(is_manual) else (255, 140, 0) # zielony + blekitny
             label_bg = (0, 0, 0)  # czarny
             text_color = (255, 255, 255)
             thickness = max(2, min(4, int(min(h, w) / 300)))
             font = cv2.FONT_HERSHEY_SIMPLEX
 
-            # Draw stored YOLO bbox on the original image.
+            # rysowanie przechowywanego YOLO bbox na oryg. zdjeciu
             try:
                 parsed_bbox = self._parse_bbox(bbox_raw)
                 if parsed_bbox is None:
@@ -571,8 +604,8 @@ class SmartLabelerController:
                 continue
 
             bbox_height = max(1, y2 - y1)
-            font_scale = max(1.0 , min(0.85, bbox_height / 180))
-            font_thickness = max(1, int(round(font_scale * 2.5)))
+            font_scale = max(2.0 , min(0.85, bbox_height / 180))
+            font_thickness = max(1.0, int(round(font_scale * 2.5)))
 
             cv2.rectangle(img, (x1, y1), (x2, y2), box_color, thickness)
 
@@ -586,14 +619,14 @@ class SmartLabelerController:
 
             label_x = x1
             # Obliczamy bezpieczną pozycję pionową, uwzględniając powiększone tło
-            label_y = max(lbl_h + pad_y * 2, y1)
+            label_y = max(lbl_h + pad_y * 4, y1)
 
             # Współrzędne lewego górnego rogu prostokąta tła
             bg_x1 = label_x
-            bg_y1 = label_y - lbl_h - (pad_y * 2)
+            bg_y1 = label_y - lbl_h - (pad_y * 4)
 
             # Współrzędne prawego dolnego rogu prostokąta tła
-            bg_x2 = min(label_x + lbl_w + (pad_x * 2), w - 1)
+            bg_x2 = min(label_x + lbl_w + (pad_x * 4), w - 1)
             bg_y2 = label_y
 
             # 1. Rysowanie czarnego tła (wypełniony prostokąt)
@@ -606,7 +639,7 @@ class SmartLabelerController:
             cv2.putText(
                 img,
                 label_text,
-                (label_x + 5, label_y - 7),
+                (label_x + 10, label_y - 14),
                 font,
                 font_scale,
                 text_color,

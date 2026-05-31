@@ -220,37 +220,7 @@ class FaceDatabase:
         )
 
         rows = self._cursor.fetchall()
-
-        data = []
-
-        for fid, label, path in rows:
-
-            img = cv2.imread(path)
-
-            if img is None:
-                continue
-
-            # BGR -> RGB
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-            # resize
-            img = cv2.resize(img, (160, 160))
-
-            # float32
-            img = img.astype(np.float32)
-
-            # [0,255] -> [0,1]
-            img /= 255.0
-
-            # [0,1] -> [-1,1]
-            img = (img - 0.5) / 0.5
-
-            # HWC -> CHW
-            img = np.transpose(img, (2, 0, 1))
-
-            data.append((fid, label, img, path))
-
-        return data
+        return rows
 
     def get_all_labeled_faces(self, dataset: int = 1) -> list:
         """Return all labeled faces with manual labels preferred over model labels."""
