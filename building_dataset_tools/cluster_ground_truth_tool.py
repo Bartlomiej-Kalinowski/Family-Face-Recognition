@@ -147,7 +147,7 @@ class GroundTruthClusterTool:
             return [], np.array([])
 
         fids = [row[0] for row in rows]
-        # Bezpieczne rzutowanie list na macierz float32 wymaganÄ… przez Scikit-Learn
+        # conversion list to matrix float32 -> Scikit-Learn needs this format
         embs = np.array([row[1] for row in rows], dtype=np.float32)
         return fids, embs
 
@@ -172,7 +172,7 @@ class GroundTruthClusterTool:
 
         return written
 
-    def copy_dataset(self, src_dataset: int, dst_dataset: int):
+    def copy_dataset(self, src_dataset: int, dst_dataset: int)->bool:
         """Copy all faces from one dataset to another."""
         if src_dataset == dst_dataset:
             print("Chciano skopiowac z tego samego datasetu do tego samego. Zamykam program")
@@ -232,7 +232,7 @@ class GroundTruthClusterTool:
         self.db._conn.commit()
         return True
 
-    def delete_records(self, dataset: int):
+    def delete_records(self, dataset: int)->None:
         """Enables deleting particular records from the database."""
         read_cursor = self.db._conn.cursor()
         batch = 50
@@ -308,11 +308,11 @@ class GroundTruthClusterTool:
 
             action = {"type": "cancel"}
 
-            def _commit_continue():
+            def _commit_continue()->None:
                 action["type"] = "continue"
                 dialog.accept()
 
-            def _commit_stop():
+            def _commit_stop()->None:
                 action["type"] = "stop"
                 dialog.accept()
 
@@ -342,7 +342,7 @@ class GroundTruthClusterTool:
             if action["type"] == "stop":
                 break
 
-    def change_record(self, dataset: int = 1):
+    def change_record(self, dataset: int = 1)->None:
         old_img_path, ok = QInputDialog.getText(
             None,
             "Podaj sciezke™",
@@ -377,11 +377,10 @@ class GroundTruthClusterTool:
 
 
     def run(self) -> None:
-
         """Main workflow for clustering and batch labeling."""
         print("[INFO] Start etykietowania ground truth przez DBSCAN + GUI.")
 
-        # 1. Konfiguracja poczatkowa przez GUI
+        # 1. startup-up configuration via GUI
         if not self._setup_session_via_gui():
             print("[INFO] Operacja przerwana przez uzytkownika.")
             return
@@ -418,7 +417,7 @@ class GroundTruthClusterTool:
             self.preprocessor.compute_embedding_from_crop()
 
         else:
-            # 2. Pobranie niepodpisanych danych
+            # 2. getting unlabeled data
             fids, embeddings = self._get_unlabeled_data()
             print("Dlugosc wektora twarzy: ", len(embeddings))
 
@@ -432,10 +431,10 @@ class GroundTruthClusterTool:
 
             print(f"[INFO] Rozpoczynam klastrowanie {len(fids)} twarzy...")
 
-            # 3. Uruchomienie DBSCAN (metoda z FaceClassifier)
+            # 3. start DBSCAN (method from FaceClassifier)
             clusters_dict = self.classifier.get_face_clusters(embeddings, fids)
 
-            # Odfiltrowanie malych klastrow i sortowanie od najwiekszych
+            # Filtering small clusters and sorting them from the biggest to the samllest
             valid_clusters = [cfids for cid, cfids in clusters_dict.items() if len(cfids) >= self.min_cluster_size]
             print(len(valid_clusters))
             valid_clusters.sort(key=len, reverse=True)
@@ -444,7 +443,7 @@ class GroundTruthClusterTool:
                 QMessageBox.information(self.ui, "Wynik DBSCAN", "Algorytm nie znalazl zadnych wyraznych grup.")
                 return
 
-            # 4. Przekazanie klastrow do GUI do masowego zatwierdzenia
+            # 4. giving clusters for bulk labeling via GUI window
             rounds_without_progress = 0
 
             to_classify = len(fids)
@@ -453,15 +452,18 @@ class GroundTruthClusterTool:
                 # Pobieramy peĹ‚ne pary (fid, path) by UI mogĹ‚o wyĹ›wietliÄ‡ obrazki
                 cluster_data = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset_id)
 
-                # Wywolanie Bulk UI
-                selected_fids, label_name = self.ui.bulk_verify_faces(cluster_data)
+                # calling bulk labeling method
+                selected_fids, label_name = None, None
+                faces_verified = self.ui.bulk_verify_faces(cluster_data)
+                if faces_verified is not None:
+                    selected_fids, label_name = faces_verified
 
-                # ObsĹ‚uga przycisku "Anuluj" lub zamkniÄ™cia okna
+                # handling "Anuluj"button lub window being closed
                 if selected_fids is None and label_name is None:
                     print("[INFO] Przerwano etykietowanie na zadanie uzytkownika.")
                     break
 
-                # jesli uzytkownik cos podpisal
+                # if user has labeled something
                 if selected_fids and label_name:
                     written = self._assign_label(selected_fids, label_name)
                     to_classify  -= written
@@ -485,7 +487,7 @@ class GroundTruthClusterTool:
 
 
 if __name__ == "__main__":
-    # Inicjalizacja zaleznosci przed startem logiki
+    # basic initilization
     app_config = Config()
     app_db = FaceDatabase(app_config)
 
@@ -495,5 +497,5 @@ if __name__ == "__main__":
     try:
         tool.run()
     finally:
-        # bezpiecznie zamykamy baze na koncu pliku glownego
+        # safe closed database
         app_db.close()

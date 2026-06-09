@@ -1,14 +1,14 @@
-# Przetwarzanie obrazu i wideo
+# image processing
 opencv-python
 numpy
 
-# AI, Sieci neuronowe i Computer Vision
+# AI, neural networks and Computer Vision
 torch
 torchvision
 ultralytics
 mediapipe
 
-# Uczenie maszynowe i analiza danych
+# ML and data analysis
 scikit-learn
 tqdm
 scipy
@@ -17,5 +17,5 @@ torchvision
 facenet-pytorch
 setuptools<82
 
-# Interfejs graficzny (GUI)
+# GUI
 PyQt5==5.15.11

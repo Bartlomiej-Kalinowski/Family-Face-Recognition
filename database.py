@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 from collections import defaultdict
+from collections.abc import Generator
 
 import cv2
 import numpy as np
@@ -13,7 +14,7 @@ import numpy as np
 class FaceDatabase:
     """Handle SQLite operations and file storage for extracted faces."""
 
-    def __init__(self, config):
+    def __init__(self, config: "Config"):
         """Initialize storage folders and open the SQLite connection."""
         self.config = config
         self._setup_folders()
@@ -32,7 +33,7 @@ class FaceDatabase:
 
     def _create_tables(self) -> None:
         """Standardowa definicja nowej struktury bazy danych."""
-        # Tabela faces z nowymi kolumnami
+        # table faces - main table
         self._cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS faces (
@@ -51,21 +52,22 @@ class FaceDatabase:
             """
         )
 
-        # Pozostałe tabele i indeksy
+        # other table and indexes
         self._cursor.execute(
             """CREATE TABLE IF NOT EXISTS processed_images
             (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT , dataset_id INT DEFAULT 1)"""
         )
 
-        # Nowy indeks dla dataset_id (bardzo przyspieszy filtrowanie Twoich 3 zbiorów)
+        # index for dataset_id
         self._cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset ON faces(dataset_id)")
         self._cursor.execute("CREATE INDEX IF NOT EXISTS idx_image ON faces(image_path)")
 
         self._conn.commit()
 
-    def save_face(self, orig_image, face_img, face_id, bbox, dataset = 1, embedding=None, is_test=0, ground_truth = None
-                  , manual_label=None, svm_prediction=None):
-        """Save a cropped face image and its metadata entry."""
+    def save_face(self, orig_image: str, face_img: np.ndarray, face_id: str,
+                  bbox: list, dataset:int = 1, embedding: np.ndarray=None, is_test: int=0, ground_truth: str = None
+                  , manual_label: str=None, prediction:str=None) -> None:
+        # Save a cropped face image and its metadata entry
         new_dir = self.config.FACES_DIR + '_' + str(dataset) if dataset != 1 else self.config.FACES_DIR
         face_path = os.path.join(new_dir, f"{face_id}.jpg")
 
@@ -84,7 +86,7 @@ class FaceDatabase:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (orig_image, face_id, dataset, face_path, json.dumps(bbox), emb_json, manual_label
-                     , svm_prediction, ground_truth, is_test))
+                     , prediction, ground_truth, is_test))
         except Exception as e:
             print(f"[SQL ERROR] save_face: {e}")
 
@@ -96,7 +98,7 @@ class FaceDatabase:
         )
         self._conn.commit()
 
-    def set_svm_prediction(self, face_id: str, label: str, dataset: int = 1) -> None:
+    def set_prediction(self, face_id: str, label: str, dataset: int = 1) -> None:
         """Store a model-predicted label for a face entry."""
         self._cursor.execute("UPDATE faces SET svm_prediction = ? WHERE face_id = ? AND dataset_id = ?",
                              (label, face_id, dataset))
@@ -113,7 +115,7 @@ class FaceDatabase:
         self._cursor.execute("SELECT path FROM processed_images WHERE dataset_id = ?", (dataset, ))
         return [row[0] for row in self._cursor.fetchall()]
 
-    def get_all_unlabeled_embeddings(self, dataset: int = 1):
+    def get_all_unlabeled_embeddings(self, dataset: int = 1)->list:
         self._cursor.execute(
             """SELECT face_id, embedding, image_path FROM faces WHERE
             dataset_id = ? AND ground_truth_label IS NULL""",
@@ -147,7 +149,7 @@ class FaceDatabase:
         print(f"Dla {missing_faces} rekordow w bazie danych nie znaleziono pliku z twarzą")
         return [(fid, np.array(json.loads(emb)).astype(float)) for fid, emb, _  in rows]
 
-    def assing_manual_labels_directly_from_ground_truth(self, dataset: int, data: list, mean_cluster_size = None):
+    def assing_manual_labels_directly_from_ground_truth(self, dataset: int, data: list, mean_cluster_size: int = None)->None:
         number_of_faces_per_label = defaultdict(list) # {label: [fid1, fid2...], ...}
         for fid, _ in data:
             self._cursor.execute("""SELECT ground_truth_label FROM faces WHERE face_id = ? AND dataset_id = ?"""
@@ -205,8 +207,8 @@ class FaceDatabase:
     def get_vgg_style_labeled_data_for_train(
             self,
             dataset: int = 1,
-            is_test=0
-    ):
+            is_test:int=0
+    ) -> list:
 
         self._cursor.execute(
             """
@@ -263,20 +265,20 @@ class FaceDatabase:
             print(f"Error while counting faces: {e}")
             return 0
 
-    def mark_unlabeled_as_test(self, dataset: int = 1):
+    def mark_unlabeled_as_test(self, dataset: int = 1)->None:
         """Flag all currently unlabeled entries as test samples."""
         self._cursor.execute("UPDATE faces SET is_test = 1 WHERE manual_label IS NULL AND dataset_id = ?",
                              (dataset, ) )
         self._conn.commit()
 
-    def mark_as_test(self, dataset, fids: list):
+    def mark_as_test(self, dataset:int , fids: list)->None:
         """Flag all currently additional data as test samples."""
         for fid in fids:
             self._cursor.execute("UPDATE faces SET is_test = 1 WHERE dataset_id = ? AND face_id = ?",
                              (dataset, fid) )
         self._conn.commit()
 
-    def get_label_by_id(self, face_id, dataset: int = 1) -> str:
+    def get_label_by_id(self, face_id:str, dataset: int = 1) -> str:
         """Return the current label for `face_id`, preferring manual labels."""
         query = "SELECT COALESCE(manual_label, svm_prediction) FROM faces WHERE face_id = ? AND dataset_id = ?"
         self._cursor.execute(query, (face_id, dataset))
@@ -316,9 +318,9 @@ class FaceDatabase:
         return "updated"
 
 
-    def rebuild_db_from_files(self, dataset: int = 1):
+    def rebuild_db_from_files(self, dataset: int = 1)->None:
         """Clear only label fields for existing rows, keeping all other metadata intact."""
-        print("Clearing DB fields: manual_labels and svm_predictions...")
+        print("Clearing DB fields: manual_labels and predictions...")
         self._cursor.execute(
             """
             UPDATE faces
@@ -332,8 +334,8 @@ class FaceDatabase:
         self._conn.commit()
         print(f"Labels cleared in {updated_rows} records.")
 
-    def test_rebuild_db_from_files(self, dataset: int = 1):
-        print("Clearing DB fields: manual_labels and svm_predictions...")
+    def test_rebuild_db_from_files(self, dataset: int = 1)->None:
+        print("Clearing DB fields: manual_labels and predictions...")
         self._cursor.execute(
             """
             UPDATE faces
@@ -347,7 +349,7 @@ class FaceDatabase:
 
 
     @staticmethod
-    def get_gt_from_path(path):
+    def get_gt_from_path(path:str)->str:
         """Extract expected label from filename convention `name_number.ext`."""
         filename = os.path.basename(path)
         name_part = os.path.splitext(filename)[0]
@@ -356,10 +358,10 @@ class FaceDatabase:
             return "_".join(parts[:-1])
         return name_part
 
-    def embedding_generator(self, dataset: int = 1):
+    def embedding_generator(self, dataset: int = 1)->Generator[tuple[str, str, np.ndarray | None], None, None]:
         read_cursor = self._conn.cursor()
         read_cursor.execute(
-            "SELECT face_id, image_path, embedding FROM faces WHERE dataset_id = ?",# mozna dodac warunek ground_truth == 'None'
+            "SELECT face_id, image_path, embedding FROM faces WHERE dataset_id = ?",
             (dataset, )
         )
         missing_files = 0
@@ -380,10 +382,10 @@ class FaceDatabase:
         print(f"Missing file for {missing_files} paths")
 
 
-    def update_emd(self, face_emb, face_id, dataset: int = 1):
+    def update_emd(self, face_emb: np.ndarray, face_id: str, dataset: int = 1)->bool:
         try:
             if face_emb is not None:
-                # Zamiana z powrotem na listę i JSON
+                # conversion to list and JSON
                 emb_list = face_emb.tolist() if isinstance(face_emb, np.ndarray) else face_emb
                 emb_json = json.dumps(emb_list)
 
@@ -407,10 +409,10 @@ class FaceDatabase:
             fids_and_paths[fid] = path
         return fids_and_paths
 
-    def clear_embeddings(self, dataset: int):
+    def clear_embeddings(self, dataset: int)->None:
         self._cursor.execute("UPDATE faces SET embedding = NULL WHERE dataset_id = ?", (dataset,))
         self._conn.commit()
 
-    def mark_as_none(self, fid, dataset: int):
+    def mark_as_none(self, fid:str, dataset: int)->None:
         self._cursor.execute("UPDATE faces SET ground_truth_label = 'None' WHERE dataset_id = ? AND face_id = ?",
                              (dataset, fid))

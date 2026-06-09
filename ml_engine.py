@@ -7,7 +7,7 @@ from collections import Counter
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
-from sklearn.model_selection import KFold, train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV
 from torch import optim
 
 from database import FaceDatabase
@@ -33,14 +33,14 @@ from tqdm import tqdm
 from sklearn.decomposition import IncrementalPCA
 from sklearn.neighbors import BallTree
 import torch.nn as nn
-from torchvision import models
-from torch.utils.data import TensorDataset, DataLoader, Subset
+from torch.utils.data import TensorDataset, DataLoader
 import torch.nn.functional as F
 
 
 
 class FacePreprocessor:
-    def __init__(self, dataset_id: int, db: FaceDatabase, cf):
+    """class responsible for preprocessing phase"""
+    def __init__(self, dataset_id: int, db: FaceDatabase, cf: "Config") -> None:
         base_options = mp_python.BaseOptions(model_asset_path=cf.FACE_LANDMARKER_MODEL_PATH)
         options = vision.FaceLandmarkerOptions(
             base_options=base_options,
@@ -56,10 +56,10 @@ class FacePreprocessor:
         self.db = db
         self.config = cf
 
-    def recompute_one_embedding_with_face_alignment(self, image_path: str):
+    def recompute_one_embedding_with_face_alignment(self, image_path: str) -> np.ndarray | None:
         """
-        Wczytuje cropa, wyrównuje linię oczu i zwraca nowy embedding.
-        Zwraca None, jeśli wyrównanie się nie powiedzie.
+        Loads face crop, apply Face Alignment and returns new embedding.
+        Returns None when Face Alignment occurs with an error.
         """
 
         img = cv2.imread(image_path)
@@ -70,7 +70,7 @@ class FacePreprocessor:
         h, w, _ = img.shape
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        # 1. Znalezienie landmarków na cropie
+        # finding landmarks on crop
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         result = self.face_landmarker.detect(mp_image)
 
@@ -90,12 +90,12 @@ class FacePreprocessor:
         right_eye_x = int(landmarks[right_idx].x * w)
         right_eye_y = int(landmarks[right_idx].y * h)
 
-        # 3. Obliczenie kąta nachylenia linii oczu
+        # calculating eyes line angle
         dy = right_eye_y - left_eye_y
         dx = right_eye_x - left_eye_x
         angle = math.degrees(math.atan2(dy, dx))
 
-        # 4. Obrót obrazu względem środka między oczami
+        # rotating image
         eyes_center = ((left_eye_x + right_eye_x) // 2, (left_eye_y + right_eye_y) // 2)
         rotation_matrix = cv2.getRotationMatrix2D(eyes_center, angle, scale=1.0)
 
@@ -107,23 +107,25 @@ class FacePreprocessor:
             borderMode=cv2.BORDER_REPLICATE  # Klonuje krawędzie, by nie było czarnych dziur
         )
 
-        # Nadpisanie oryginalnego pliku na dysku
+        # overwriting original file
         success = cv2.imwrite(image_path, aligned_img)
         if not success:
             print(f"[OSTRZEŻENIE] Nie udało się nadpisać pliku: {image_path}")
         # =========================================================
 
-        # 5. Skalowanie do SFace (112x112) i wyciągnięcie embeddingu
+        # 5. scaling to SFace (112x112) and returning the embedding
         aligned_resized = cv2.resize(aligned_img, (112, 112))
         embedding = self.recognizer.feature(aligned_resized)
 
         return embedding.flatten().astype(np.float32)
 
-    def close(self):
+    def close(self) -> None:
+        """Close the Face Alignment object."""
         self.face_landmarker.close()
 
     @staticmethod
-    def recompute_one_embedding(face_image_path):
+    def recompute_one_embedding(face_image_path: str) -> np.ndarray | None:
+        """Apply image transormation to gray format and run HOG descriptor"""
         # Wczytujemy fizyczny plik obrazu z dysku
         img = cv2.imread(face_image_path)
 
@@ -147,7 +149,8 @@ class FacePreprocessor:
         return img
 
 
-    def compute_embedding_from_crop(self, alignment = False):
+    def compute_embedding_from_crop(self, alignment: bool = False)-> None:
+        """Manage computing embeddings form face crops"""
         nb_features = None
         self.db.clear_embeddings(self.dataset)
         updated_correctly = 0
@@ -161,7 +164,7 @@ class FacePreprocessor:
                 face_emb = self.recompute_one_embedding_with_face_alignment(img_path)
                 print("After: ", len(face_emb))if face_emb is not None else None
                 if face_emb is not None:
-                    # Normalizacja L2 (SFace działa najlepiej na sferze)
+                    #L2 Normalization (SFace works the best on sphere)
                     face_emb = face_emb / (np.linalg.norm(face_emb) + 1e-7)
 
                     if self.db.update_emd(face_emb, face_id, dataset=self.dataset):
@@ -172,9 +175,9 @@ class FacePreprocessor:
                     continue
             self.db._conn.commit()
             print(f"\n[DONE] Neural Network update complete. Updated: {updated_correctly}")
-            return  # PCA jest zbędne dla SFace
+            return  # PCA is not necessary for SFace
 
-        #WERSJA 2: bez face alignment
+        # version 2: without face alignment
         pca = IncrementalPCA(n_components=150)
         scaler = Normalizer(norm='l2')
         updated_correctly = 0
@@ -187,9 +190,9 @@ class FacePreprocessor:
             face_emb = self.recompute_one_embedding(img_path)
             if face_emb is None:
                 print(f"[SKIP] Nie wykryto twarzy dla ID: {face_id}. Pomijam aktualizacje.")
-                continue  # Nie dodajemy do batcha, nie aktualizujemy bazy, gdy detector nic nie wykryl
+                continue  # not added to the batch, not updated if no face was detected
             nb_features = face_emb.shape
-            # KROK 1: Zapisuje surowy HOG
+            # step 1: saving raw HOG
             success = self.db.update_emd(face_emb, face_id, dataset=self.dataset)
             if success:
                 updated_correctly += 1
@@ -197,12 +200,12 @@ class FacePreprocessor:
             else:
                 update_errors += 1
 
-            # Jeśli paczka ma 150 elementów, uczymy model i czyścimy paczkę
+            # if batch has 150 elements, training the model and clearing the batch
             if len(batch_embs) == batch_size:
                 pca.partial_fit(np.array(batch_embs))
                 batch_embs.clear()
 
-        # Dobicie resztki danych, które nie wypełniły pełnej setki
+        # rest of data, which size is smaller than size of ful batch
         if len(batch_embs) > 0:
             pca.partial_fit(np.array(batch_embs))
 
@@ -216,16 +219,16 @@ class FacePreprocessor:
         update_errors = 0
         nb_features = None
 
-        # 2. Transformacja i normalizacja każdego embeddingu
+        # transormation and normalization each embedding
         for face_id, _, face_emb in tqdm(self.db.embedding_generator(self.dataset), "Transforming"):
-            # PCA wymaga danych w formacie 2D, więc robimy reshape(1, -1)
+            # PCA needs data in @D format, so reshape(1, -1) done
             reduced = pca.transform(face_emb.reshape(1, -1))
 
-            # Skalowanie L2 i powrót do 1D za pomocą flatten()
+            # L2 Scaling and returning to 1D format with flatten() method
             final_emb = scaler.transform(reduced).flatten()
             nb_features = final_emb.shape
 
-            # Aktualizacja w bazie - zwraca True/False
+            # database update - returns True/False
             success = self.db.update_emd(final_emb, face_id, dataset=self.dataset)
             if success:
                 updated_correctly += 1
@@ -240,9 +243,9 @@ class FacePreprocessor:
         print("Emb shape part II: ", nb_features)
 
 class FaceExtractor:
-    """Detect faces with YOLO and compute HOG embeddings for each crop."""
+    """Detect faces with YOLO model"""
 
-    def __init__(self, config, db: FaceDatabase, dataset_id: int):
+    def __init__(self, config: "Config", db: FaceDatabase, dataset_id: int):
         self.config = config
         self.detector = YOLO(config.YOLO_MODEL_PATH)
         self.db = db
@@ -337,7 +340,7 @@ class SVMClassifier:
             n_jobs=-1
         )
 
-        #-------do eksperymentow-----------------------------------------------------
+        #-------used for experiments-----------------------------------------------------
         # pipe = Pipeline([
         #     ("clf", OneVsRestClassifier(SVC(probability=True, class_weight="balanced"), n_jobs=-1))
         # ])
@@ -372,7 +375,7 @@ class SVMClassifier:
         print(f"Best parameters (OvR): {search.best_params_}")
         print(f"Best cross-validation score: {search.best_score_:.2%}")
 
-    def predict_unlabeled(self, x_test: np.ndarray, threshold = 0.3) -> tuple:
+    def predict_unlabeled(self, x_test: np.ndarray, threshold: float = 0.3) -> tuple:
         """Predict labels and confidence scores for unlabeled embeddings."""
 
         print("X_test shape: ", x_test.shape, "Threshold: ", threshold)
@@ -381,7 +384,7 @@ class SVMClassifier:
 
         probs_all = self.model.predict_proba(x_test)
 
-        # Wyciągamy najwyższe prawdopodobieństwo i odpowiadający mu indeks klasy
+        # getting highest probability and class index it refers to
         max_probs = np.max(probs_all, axis=1)
         max_indices = np.argmax(probs_all, axis=1)
 
@@ -415,18 +418,16 @@ class KNNclassifier:
         self.k = 1
 
 
-        # Budujemy drzewo tylko raz na zatwierdzonych danych
+        # building the tree only once on approved data
         print("[INFO] Budowanie BallTree...")
         self.bt = BallTree(x_train, leaf_size=30)
 
     def predict_unlabeled(self, x_test: np.ndarray) -> tuple:
-        """
-        Klasyfikuje nowe wektory twarzy na podstawie k najbliższych sąsiadów.
-        """
+        """Classify new data using k-nearest neighbours algorithm"""
 
         print("X_test shape: ", x_test.shape)
         from collections import Counter
-        # Szukamy k-sąsiadów.
+        # looking for k-nearest neighbours
         distances, indices = self.bt.query(x_test, k=self.k, return_distance=True)
         predictions = []
 
@@ -447,7 +448,7 @@ class KNNclassifier:
                 print("Znalezino nieznana osobe")
                 predictions.append("Nieznana osoba")
             else:
-                # Głosowanie większościowe tylko wśród "bliskich" sąsiadów
+                # voting: only by nearby neighbours
                 counts = Counter(valid_neighbors_labels)
                 most_common_label = counts.most_common(1)[0][0]
                 predictions.append(most_common_label)
@@ -458,7 +459,7 @@ class KNNclassifier:
 
 class VGGClassifier(nn.Module):
 
-    def __init__(self, cf, num_classes, idx_to_class, num_epochs_=5):
+    def __init__(self, cf, num_classes: int, idx_to_class: dict, num_epochs_: int =5):
         super().__init__()
 
         self.num_classes = num_classes
@@ -469,9 +470,11 @@ class VGGClassifier(nn.Module):
         for param in self.model.parameters():
             param.requires_grad = False
 
+        #first classifier's head
         # classifier
         # self.classifier = nn.Linear(512, self.num_classes)
 
+        # second - better, classifier's head--------------
         self.classifier = nn.Sequential(
             nn.Linear(512, 256),
             nn.ReLU(inplace=True),
@@ -482,30 +485,31 @@ class VGGClassifier(nn.Module):
         self.idx_to_class = idx_to_class
         self.num_epochs = num_epochs_
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor)-> torch.Tensor:
+        """Runs a forward pass through the model."""
         embeddings = self.model(x)      # [B, 512]
         logits = self.classifier(embeddings)  # [B, self.num_classes]
         return logits
 
-    def prepare_data(self, x_train, y_train):
-
+    def prepare_data(self, x_train: np.ndarray, y_train: np.ndarray) -> TensorDataset:
         print("X_train shape: ", len(x_train), "Y_train shape: ", len(y_train))
-        # 1. Konwersja na Tensory
-        # x_train: [liczba_zdjec, kanały, wysokość, szerokość]
-        # y_train: [liczba_zdjec] (liczby całkowite)
+        # 1. conversion to Tensors
+        # x_train: [images number, canals, height, width]
+        # y_train: [images number] (integers)
         x_tensor = torch.tensor(x_train, dtype=torch.float32)
         y_tensor = torch.tensor(y_train, dtype=torch.long)
 
-        # 2. Stworzenie obiektu Dataset (paczka cechy + etykiety)
+        # 2. creating dataset object (batch of treat + label)
         dataset = TensorDataset(x_tensor, y_tensor)
 
         return dataset
 
-    def fit(self, x_train, y_train, patience=3):
+    def fit(self, x_train: np.ndarray, y_train: np.ndarray, patience:int =3) -> None:
+        """Fits the VGG classifier"""
 
-        # 1. Sztywny podział danych na Train (80%) i Val/Eval (20%) w pamięci RAM
-        # Parametr stratify=should_stratify gwarantuje, że każda osoba będzie miała
-        # reprezentację (zdjęcia) zarówno w zbiorze treningowym, jak i walidacyjnym.
+        # 1. data splitted manually into Train (80%) and Val/Eval (20%) in RAM memory.
+        # Parameter stratify=should_stratify ensures, that each person will have
+        # representaion (images) zbth in train and evaluation dataset.
         counter_dict = dict()
         unique_labels = set(y_train)
         for label in unique_labels:
@@ -532,29 +536,29 @@ class VGGClassifier(nn.Module):
 
         criterion = nn.CrossEntropyLoss(weight=weights)
 
-        # 2. Przygotowanie TensorDataset dla obu podzbiorów
+        # 2. Preparing TensorDataset for both subsets
         train_dataset = self.prepare_data(x_tr, y_tr)
         val_dataset = self.prepare_data(x_val, y_val)
 
-        # 3. Stworzenie DataLoaderów
+        # 3. creating DataLoaders
         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
-        # 4. Optymalizator
+        # 4. Optymizer - Adam
         optimizer = optim.Adam(self.classifier.parameters(), lr=0.005)
 
-        # Zmienne pomocnicze do monitorowania Early Stopping i zapisu wag
+        # temporary variables for monitoring Early Stopping and for saving model wages
         best_model_wts = copy.deepcopy(self.model.state_dict())
         best_val_loss = float('inf')
-        patience_counter = 0  # Licznik epok bez poprawy błędu
+        patience_counter = 0  # epochs counter
 
         print(f"\nRozpoczynanie treningu (Maksymalna liczba epok: {self.num_epochs})")
         print(f"Rozmiar zbioru treningowego: {len(x_tr)} | Walidacyjnego: {len(x_val)}")
         print("-" * 60)
 
         for epoch in range(self.num_epochs):
-            # --- faza treningu---
-            self.model.train()  #  tryb treningowy
+            # --- training phase---
+            self.model.train()  # training mode
             running_train_loss = 0.0
 
             for inputs, labels in tqdm(train_loader, "Trenowanie modelu"):
@@ -567,8 +571,8 @@ class VGGClassifier(nn.Module):
 
             epoch_train_loss = running_train_loss / len(train_loader)
 
-            # --- faza walidacji ---
-            self.model.eval()
+            # --- eval phase ---
+            self.model.eval() # eval mode
             running_val_loss = 0.0
 
             with torch.no_grad():
@@ -579,7 +583,7 @@ class VGGClassifier(nn.Module):
 
             epoch_val_loss = running_val_loss / len(val_loader)
 
-            # Wypisanie logów dla bieżącej epoki
+            # printing logs for current epoch
             print(f"Epoch {epoch + 1:02d}/{self.num_epochs} | "
                   f"Train Loss: {epoch_train_loss:.4f} | "
                   f"Val Loss: {epoch_val_loss:.4f}", end=" ")
@@ -594,16 +598,16 @@ class VGGClassifier(nn.Module):
                 patience_counter += 1  # Brak poprawy, zwiększamy licznik cierpliwości
                 print(f" -> [Brak poprawy od {patience_counter} epok]")
 
-            # Sprawdzenie warunku stopu
+            # checking stop condition
             if patience_counter >= patience:
                 print(f"\n Early Stopping! Brak poprawy błędu walidacji przez {patience} kolejnych epok. Przerywam.")
                 break
 
-        # 5. Przywrócenie wag z momentu, w którym Val Loss był najniższy
+        # 5. restoring wages from the moment, when Val Loss was the smallest
         print(f"\nTrening zakończony. Przywracanie najlepszych wag (Najniższy Val Loss: {best_val_loss:.4f})")
         self.model.load_state_dict(best_model_wts)
 
-    def predict_unlabeled(self, x_test, threshold=0.5):
+    def predict_unlabeled(self, x_test: np.ndarray, threshold:float=0.5) -> list:
 
         self.eval()
         predicted_names = []

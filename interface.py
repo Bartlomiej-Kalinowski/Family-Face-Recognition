@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
 )
 
 from config import Config
+from collections.abc import Callable
 
 
 class FaceCard(QFrame):
@@ -32,7 +33,7 @@ class FaceCard(QFrame):
 
     confirmed = pyqtSignal(str, str)
 
-    def __init__(self, face_id, name, dataset, is_prediction_ = False, parent=None):
+    def __init__(self, face_id: str, name: str, dataset: int, is_prediction_ = False, parent=None):
         """Build a card for one detected face."""
         super().__init__(parent)
         self.face_id = face_id
@@ -87,7 +88,7 @@ class FaceCard(QFrame):
 
         self.setLayout(layout)
 
-    def _on_confirm(self):
+    def _on_confirm(self) -> None:
         """Emit the edited label and visually mark the card as reviewed."""
         new_name = self.input_name.text().strip()
         self.confirmed.emit(self.face_id, new_name)
@@ -110,7 +111,7 @@ class FaceInterface(QMainWindow):
         self._init_ui()
         self.show()
 
-    def _setup_dark_theme(self):
+    def _setup_dark_theme(self)->None:
         """Apply a consistent dark palette to all Qt widgets."""
         self.app.setStyle("Fusion")
         palette = QPalette()
@@ -123,7 +124,7 @@ class FaceInterface(QMainWindow):
         palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
         self.app.setPalette(palette)
 
-    def _init_ui(self):
+    def _init_ui(self) -> None:
         """Build the primary layout, grid area, and status controls."""
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -197,7 +198,7 @@ class FaceInterface(QMainWindow):
         controls.addWidget(self.lbl_stats)
         layout.addLayout(controls)
 
-    def ask_for_scan_mode(self):
+    def ask_for_scan_mode(self) -> str:
         """Ask the user which data preparation mode should be used."""
         msg = QMessageBox()
         msg.setWindowTitle("Tryb Skanowania")
@@ -217,9 +218,9 @@ class FaceInterface(QMainWindow):
             return "use_existing"
         return "cancel"
 
-    def ask_for_test_mode(self):
+    def ask_for_test_mode(self) -> str:
         """Ask the user if they want to label train dataset manually
-        or get the train set by choose faces and ground truth labels randomly from teh database."""
+        or get the train set by choose faces and ground truth labels randomly from the database."""
         msg = QMessageBox()
         msg.setWindowTitle("Tryb etykietowania")
         msg.setText("Wybierz sposób na zbudowanie zbioru treningowego")
@@ -235,7 +236,7 @@ class FaceInterface(QMainWindow):
             return "manual"
         return "cancel"
 
-    def ask_for_preprocessing_type(self, dataset: int = 1):
+    def ask_for_preprocessing_type(self, dataset: int = 1)-> str:
         """Ask the user which type of embeddings should be used."""
         msg = QMessageBox()
         msg.setWindowTitle("Wybor reprezentacji wektorow twarzy")
@@ -252,7 +253,7 @@ class FaceInterface(QMainWindow):
             return "neural_network"
         return "cancel"
 
-    def ask_for_classifier(self, dataset: int):
+    def ask_for_classifier(self) -> str:
         """Ask the user which type of embeddings should be used."""
         msg = QMessageBox()
         msg.setWindowTitle("Wybor klasyfikatora")
@@ -272,7 +273,7 @@ class FaceInterface(QMainWindow):
             return "VGG_face"
         return "cancel"
 
-    def ask_for_face_alignment(self, dataset: int):
+    def ask_for_face_alignment(self)->str:
         """Ask the user which type of embeddings should be used."""
         msg = QMessageBox()
         msg.setWindowTitle("Kalibracja linii oczu")
@@ -289,7 +290,7 @@ class FaceInterface(QMainWindow):
             return "no"
         return "cancel"
 
-    def ask_for_scan_dataset_id(self, title, comment) -> int:
+    def ask_for_scan_dataset_id(self, title:str, comment:str) -> int:
         msg = QMessageBox()
         msg.setWindowTitle(title)
         msg.setText(comment)
@@ -307,7 +308,7 @@ class FaceInterface(QMainWindow):
         else:
             return -1
 
-    def refresh_classified_faces(self, face_data_list, callback, dataset, is_prediction: bool = False):
+    def refresh_classified_faces(self, face_data_list:list , callback: Callable, dataset: int, is_prediction: bool = False)->None:
         """Rebuild the grid from `(face_id, label, ...)` records."""
         for i in reversed(range(self.grid_layout.count())):
             widget = self.grid_layout.itemAt(i).widget()
@@ -325,7 +326,7 @@ class FaceInterface(QMainWindow):
         self.lbl_stats.setText(f"Załadowane twarze: {len(face_data_list)}")
 
     @staticmethod
-    def _parse_face_row(row):
+    def _parse_face_row(row: tuple) -> tuple:
         """Normalize row formats from SVM output and full DB output."""
         if len(row) >= 3 and isinstance(row[0], str) and os.path.sep in row[0]:
             return str(row[1]), str(row[2] or "Unknown")
@@ -335,16 +336,16 @@ class FaceInterface(QMainWindow):
 
         return "", "Unknown"
 
-    def set_visualize_callback(self, callback):
+    def set_visualize_callback(self, callback: Callable)->None:
         """Connect controller callback for visualization generation action."""
         self.btn_generate_visualization.clicked.connect(callback)
 
-    def set_visualization_enabled(self, enabled: bool):
-        """Show and toggle visualization button after SVM phase."""
+    def set_visualization_enabled(self, enabled: bool)->None:
+        """Show and toggle visualization button after classification phase."""
         self.btn_generate_visualization.setVisible(True)
         self.btn_generate_visualization.setEnabled(enabled)
 
-    def bulk_verify_faces(self, face_id_path_pairs: dict):
+    def bulk_verify_faces(self, face_id_path_pairs: dict)->None | tuple:
         """Open a dialog to assign one label to a selected cluster."""
         self.final_selection = []
         self.bulk_name = ""
@@ -405,7 +406,7 @@ class FaceInterface(QMainWindow):
             """
         )
 
-        def validate_bulk_input():
+        def validate_bulk_input() -> None:
             """Enable confirmation only when the name field is non-empty."""
             is_valid = len(self.bulk_input.text().strip()) > 0
             btn_confirm.setEnabled(is_valid)
@@ -428,38 +429,38 @@ class FaceInterface(QMainWindow):
             self.final_selection = [fid for fid, chk in check_boxes.items() if chk.isChecked()]
             return self.final_selection, self.bulk_name
 
-        return None, None
+        return None
 
-    def show_startup_progress(self, total):
-        """Show modal progress dialog used during startup operations."""
-        self.progress_dialog = QProgressDialog("Analizowanie bazy...", "Anuluj", 0, total)
-        self.progress_dialog.setWindowModality(Qt.ApplicationModal)
-        self.progress_dialog.show()
+    # def show_startup_progress(self, total):
+    #     """Show modal progress dialog used during startup operations."""
+    #     self.progress_dialog = QProgressDialog("Analizowanie bazy...", "Anuluj", 0, total)
+    #     self.progress_dialog.setWindowModality(Qt.ApplicationModal)
+    #     self.progress_dialog.show()
 
-    def update_startup_progress(self, value, text):
-        """Update startup dialog progress and text if the dialog exists."""
-        if hasattr(self, "progress_dialog"):
-            self.progress_dialog.setValue(value)
-            self.progress_dialog.setLabelText(text)
-            QApplication.processEvents()
+    # def update_startup_progress(self, value, text):
+    #     """Update startup dialog progress and text if the dialog exists."""
+    #     if hasattr(self, "progress_dialog"):
+    #         self.progress_dialog.setValue(value)
+    #         self.progress_dialog.setLabelText(text)
+    #         QApplication.processEvents()
 
-    def close_startup_progress(self):
-        """Close startup progress dialog if it was created."""
-        if hasattr(self, "progress_dialog"):
-            self.progress_dialog.close()
+    # def close_startup_progress(self):
+    #     """Close startup progress dialog if it was created."""
+    #     if hasattr(self, "progress_dialog"):
+    #         self.progress_dialog.close()
 
-    def start_scanning(self):
-        """Run initial scanning and stream updates into the progress widgets."""
+    # def start_scanning(self) -> None:
+    #     """Run initial scanning and stream updates into the progress widgets."""
+    #
+    #     def update_bar(current, total, text):
+    #         self.progressBar.setMaximum(total)
+    #         self.progressBar.setValue(current)
+    #         self.statusLabel.setText(text)
+    #         self.app.processEvents()
+    #
+    #     self.controller.run_initial_scan(progress_callback=update_bar)
 
-        def update_bar(current, total, text):
-            self.progressBar.setMaximum(total)
-            self.progressBar.setValue(current)
-            self.statusLabel.setText(text)
-            self.app.processEvents()
-
-        self.controller.run_initial_scan(progress_callback=update_bar)
-
-    def update_progress(self, current: int, total: int, message: str = ""):
+    def update_progress(self, current: int, total: int, message: str = "") -> None:
         """Update main progress bar with percentage and optional status message."""
         if total > 0:
             percentage = int((current / total) * 100)
@@ -473,12 +474,12 @@ class FaceInterface(QMainWindow):
         # Force repaint to keep UI responsive during long synchronous loops.
         self.progressBar.repaint()
 
-    def update_face_stats(self, count: int):
+    def update_face_stats(self, count: int) -> None:
         """Refresh bottom-bar text with total detected face count."""
         self.lbl_stats.setText(f"Wykryto łącznie twarzy: {count}")
 
     @staticmethod
-    def confirm_all_labels():
+    def confirm_all_labels()-> int:
         """Ask whether to generate labeled visualization outputs."""
         reply = QMessageBox.question(
             None,

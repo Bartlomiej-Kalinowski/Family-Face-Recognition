@@ -24,17 +24,15 @@ from PyQt5.QtWidgets import QApplication, QMessageBox # only for visualisation
 
 class SmartLabelerController:
     """Coordinate scan, labeling, training, prediction, and visualization stages."""
-
     def __init__(self):
-        self.config = Config()
-        # 1. Tworzymy obiekt bazy danych w całej aplikacji
-        self.db = FaceDatabase(self.config)
-        #GUI initialization
+        self.config = Config() # basic configuration
+        self.db = FaceDatabase(self.config) # application database object
+        # GUI initialization
         self.ui = FaceInterface()
         self.ui.set_visualize_callback(self._on_generate_visualization_clicked)
         self.dataset = self.ui.ask_for_scan_dataset_id("Zbiory danych", "Wybierz zestaw danych:")
-        # 2. Przekazujemy ten sam obiekt (referencję) do ekstraktora
-        self.extractor = FaceExtractor(self.config, self.db, self.dataset)
+
+        self.extractor = FaceExtractor(self.config, self.db, self.dataset) # face detector and extractor initialization
         self.preprocessor = FacePreprocessor(self.dataset, self.db,  self.config)
         self.classifier = FaceClusterer()
 
@@ -105,19 +103,23 @@ class SmartLabelerController:
         print(f"Skanowanie zakończone. Wycięto i zapisano {total_faces} twarzy.")
 
     def process_bulk_selection(self, id_path_pairs: dict) -> None:
-        """id_path_pairs to lista [(fid1, path1), (fid2, path2), ...]"""
+        """Enables to assign manual labels to faces in groups,
+        id_path_pairs is a list[(fid1, path1), (fid2, path2), ...]"""
         if not id_path_pairs:
             return
 
-        # Przekazujemy do UI pary (ID, ścieżka), żeby okno mogło wyświetlić miniatury
-        selected_fids, name = self.ui.bulk_verify_faces(id_path_pairs)
+        # passing pairs (ID, ścieżka), so the miniatures could be displayed in the GUI window
+        selected_fids, name = None, None
+        faces_verified = self.ui.bulk_verify_faces(id_path_pairs)
+        if faces_verified is not None:
+            selected_fids, nam = faces_verified
 
         if not selected_fids or not name:
             return
 
         total = len(selected_fids)
         for i, fid in enumerate(selected_fids):
-            # Zapisujemy w bazie
+            # save to database
             self.db.set_manual_label(fid, name, dataset=self.dataset, is_test=0)
 
             self.ui.update_progress(i + 1, total, f"Zapisywanie: {name}")
@@ -126,47 +128,34 @@ class SmartLabelerController:
         self.db._conn.commit()
         self.refresh_main_view()
 
-    def preprocessing_phase(self):
-        # preprocessing_type = "hog"
-        # preprocessing_type = self.ui.ask_for_preprocessing_type()
-        # if preprocessing_type == "hog":
-        #     self.preprocessor.compute_embedding_from_crop()
-        # elif preprocessing_type == "neural_network":
-        #     self.preprocessor.compute_embedding_from_crop()
-        # else:
-        #     print("Przerwano dzialanie programu")
-        #     exit(0)
+    def preprocessing_phase(self) -> None:
+        """Compute embeddings by applying PCA and running HOG decsriptor"""
         self.preprocessor.compute_embedding_from_crop()
 
-    def vgg_preprocessing(self, rows):
+    def vgg_preprocessing(self, rows: list) -> list:
+        """Compute embeddings by applying transormation to original face crop
+        in order to pass it to vgg-face neural network"""
         data = []
 
         for fid, label, path in rows:
-
             img = cv2.imread(path)
-
             if img is None:
                 continue
 
             # BGR -> RGB
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
             # resize
             img = cv2.resize(img, (160, 160))
-
             # float32
             img = img.astype(np.float32)
-
             # [0,255] -> [0,1]
             img /= 255.0
-
             # [0,1] -> [-1,1]
             img = (img - 0.5) / 0.5
-
             # HWC -> CHW
             img = np.transpose(img, (2, 0, 1))
-
             data.append((fid, label, img, path))
+
         return data
 
 
@@ -175,7 +164,7 @@ class SmartLabelerController:
         """Run DBSCAN clustering and return whether training can continue."""
         unlabeled_data = self.db.get_all_embeddings_with_ground_truth(dataset=self.dataset)
 
-        # wybor jedynie czesci zbioru do trenowania, ale nie wszystkich
+        # only a part of data should be train data
         import random
         unlabeled_data = random.sample(unlabeled_data, int(0.25 * len(unlabeled_data)))
 
@@ -202,10 +191,10 @@ class SmartLabelerController:
             for cluster_fids in valid_clusters.values():
                 print("Number of faces in cluster:\t", len(cluster_fids))
 
-                # Pobieramy ścieżki do zdjęć dla tego klastra, żeby GUI mogło je wyświetlić
+                # getting paths to crops so as GUI can display them
                 cluster_fids_and_paths = self.db.get_paths_for_fids(cluster_fids, dataset=self.dataset)
 
-                # Przekazujemy pary do funkcji bulk
+                # passing pairs to bulk function
                 self.process_bulk_selection(cluster_fids_and_paths)
         else:
             print("Przerwano dzialanie programu")
@@ -219,17 +208,21 @@ class SmartLabelerController:
             print("Too less train different labels (min. 2 required), to start SVM prediction!")
         return {"ready_for_training": ready_for_training, "labeled_count": labeled_count}
 
-    def calculate_mean_labels_group_size_and_limit_group_size(self, train_data):
+    def calculate_mean_labels_group_size_and_limit_group_size(self, train_data : list) -> list:
+        """calculate the mean size of train cluster and limit the size by dropping out some data from train set,
+        so the classes are more balanced.
+        This function is necesarry in the final version of the application because vgg-face can recognize faces
+        even if train set is not well-balanced"""
         labels_groups = defaultdict(list)
         for tpl in train_data:
-            label = tpl[1]  # wyciągam manual_label
+            label = tpl[1]  # getting manual label
             labels_groups[label].append(tpl)
 
-        # Zliczanie grup
+        # counting groups
         number_of_groups = len(labels_groups)
         print(f"Liczba unikalnych grup manual_label: {number_of_groups}")
 
-        # obliczanie sredniej ilosci fids na etykiete
+        # counting mean fids number
         mean_fids_per_label = 0
         i = 0
         for label, group in labels_groups.items():
@@ -239,14 +232,15 @@ class SmartLabelerController:
 
         print("Mean number of fids per label: ", mean_fids_per_label)
 
-        # #limitowanie dlugosci grupy
+        # optional: limiting the size of train clusters
+
         # new_test_data = []
         # for label, group in labels_groups.items():
         #     labels_groups[label] = group[:int(mean_fids_per_label * 10.0)]
         #     new_test_data.extend(group[int(mean_fids_per_label * 10.0):])
         #     print("Zostawiam w grupie testowej dla etykiety: ", label, " ", len(group[int(mean_fids_per_label * 10.0):]), "")
 
-        # Konwersja wartości słownika na listę krotek
+        # conversion the dictionary into the list of tuples
         train_data = []
         for groups in labels_groups.values():
             train_data.extend(groups)
@@ -257,8 +251,9 @@ class SmartLabelerController:
 
         return train_data
 
-    def run_classification_phase(self, classifier, balance_classes=None):
-        """Train the SVM pipeline and return train samples for evaluation."""
+    def run_classification_phase(self, classifier: str, balance_classes: bool = None)\
+            -> SVMClassifier | KNNclassifier | VGGClassifier | None:
+        """Trains the classifier and returns fitted classifier."""
         print("\n[SYSTEM] Starting train phase...")
 
         if classifier == "VGG_face":
@@ -290,18 +285,21 @@ class SmartLabelerController:
             print("Przerwano dzialanie programu")
             exit(0)
 
-    def classification_with_svm(self, train_data):
+    def classification_with_svm(self, train_data: list) -> SVMClassifier:
+        """train SVM classifier and return fitted classifier."""
         _, train_labels, train_embs = zip(*train_data)
         svm_classifier = SVMClassifier()
         svm_classifier.train_one_vs_rest_svm(list(train_embs), list(train_labels))
         return svm_classifier
 
-    def classification_with_knn(self, train_data):
+    def classification_with_knn(self, train_data: list) -> KNNclassifier:
+        """returns KNN classifier object"""
         _, train_labels, train_embs = zip(*train_data)
         knn_classifier = KNNclassifier(train_embs, list(train_labels))
         return knn_classifier
 
-    def classification_with_vgg(self, train_data):
+    def classification_with_vgg(self, train_data: list) -> VGGClassifier:
+        """Train VGG classifier and return fitted classifier."""
         _, train_labels, train_images, _ = zip(*train_data)
 
         unique_names = sorted(list(set(train_labels)))
@@ -321,14 +319,14 @@ class SmartLabelerController:
 
         return vgg_classifier
 
-    def run_evaluation_phase(self, classifier):
+    def run_evaluation_phase(self, classifier: SVMClassifier | KNNclassifier | VGGClassifier) -> bool:
         """Run predictions for test data, log metrics, and refresh UI with results."""
         print("\n[SYSTEM] Starting evaluation phase...")
 
-        # 1. Pozyskanie danych testowych i predykcji
+        # getting test data and predictions
         if isinstance(classifier, VGGClassifier):
             print("[INFO] Wykryto model VGG. Przygotowanie obrazów...")
-            # Zakładamy, że metoda zwraca: fid, label, image, path
+            # assuming that method returns: fid, label, image, path
             test_data = self.db.get_vgg_style_labeled_data_for_train(dataset=self.dataset, is_test=1)
             test_data = self.vgg_preprocessing(test_data)
 
@@ -338,14 +336,14 @@ class SmartLabelerController:
 
             fids, labels, train_images, paths = zip(*test_data)
 
-            # predict_unlabeled zwraca list[(name, prob)]
+            # predict_unlabeled returns a list[(name, prob)]
             predictions_with_probs = classifier.predict_unlabeled(np.asarray(train_images))
 
             y_pred = [res[0] for res in predictions_with_probs]
             confidences = [res[1] for res in predictions_with_probs]
 
         else:
-            # Standardowa ścieżka dla SVM / KNN
+            # standard pipeline for SVM / KNN
             test_data = self.db.get_unlabeled_test_data(dataset=self.dataset)
             if not test_data:
                 print("[INFO] Brak nowych danych testowych.")
@@ -353,17 +351,17 @@ class SmartLabelerController:
 
             fids, paths, test_embs, _ = zip(*test_data)
 
-            #SVM/KNN zwraca (y_pred, confidences)
+            #SVM/KNN returns (y_pred, confidences)
             y_pred, confidences = classifier.predict_unlabeled(np.asarray(test_embs))
 
         if len(y_pred) == 0:
             print("[BŁĄD] Model nie zwrócił żadnych wyników.")
             return False
 
-        # 2. Pobieranie etykiet prawdziwych (Ground Truth) do metryk
+        # getting manually set labels (Ground Truth) to metrics
         y_true = [self.db.get_gt_from_path(path) for path in paths]
 
-        # Filtrowanie próbek, które mają zdefiniowane GT (do raportu sklearn)
+        # filtering data which already have defined Ground Truth (for sklearn report)
         valid_idx = [i for i, label in enumerate(y_true) if label is not None and label != 'None']
 
         if valid_idx:
@@ -417,12 +415,12 @@ class SmartLabelerController:
 
         print(f"\n[SUKCES] Ewaluacja zakończona. Accuracy: {acc:.2%}")
 
-        # 4. Aktualizacja bazy danych i interfejsu
-        # Zapisujemy predykcję do bazy (fid -> imię)
+        # database and interface actualization
+        # saving prediction to database (fid -> name)
         for fid, pred in zip(fids, y_pred):
             self.db.set_svm_prediction(fid, pred, dataset=self.dataset)
 
-        # Przygotowanie listy dla UI: (fid, "Imię (... %)") lub (fid, "Imię")
+        # making list for GUI: (fid, "Imie (... %)") lub (fid, "Imie")
         classified_for_ui = []
         if confidences is not None:
             for fid, name, conf in zip(fids, y_pred, confidences):
@@ -509,7 +507,6 @@ class SmartLabelerController:
         elif mode == "cancel":
             return
 
-        # self.refresh_main_view()
         sys.exit(self.ui.app.exec_())
 
 
@@ -579,14 +576,14 @@ class SmartLabelerController:
 
             h, w, _ = img.shape
 
-            # Kolory w formacie BGR (Blue, Green, Red)
+            # colours in BGR format (Blue, Green, Red)
             box_color = (0, 215, 0) if bool(is_manual) else (255, 140, 0) # zielony + blekitny
             label_bg = (0, 0, 0)  # czarny
             text_color = (255, 255, 255)
             thickness = max(2, min(4, int(min(h, w) / 300)))
             font = cv2.FONT_HERSHEY_SIMPLEX
 
-            # rysowanie przechowywanego YOLO bbox na oryg. zdjeciu
+            # drawing stored YOLO bbox on the original image
             try:
                 parsed_bbox = self._parse_bbox(bbox_raw)
                 if parsed_bbox is None:
@@ -612,27 +609,28 @@ class SmartLabelerController:
             source_tag = "[MANUAL]" if bool(is_manual) else "[PREDICTION]"
             label_text = f"{source_tag} {str(label or 'Unknown').upper()}"
 
-            (lbl_w, lbl_h), _ = cv2.getTextSize(label_text, font, font_scale, font_thickness)
+            (lbl_w, lbl_h), _ = cv2.getTextSize(label_text, font, font_scale, int(font_thickness))
 
-            pad_x = 15  # O ile pikseli prostokąt ma wystawać w lewo i w prawo poza tekst
-            pad_y = 12  # O ile pikseli prostokąt ma wystawać w górę i w dół poza tekst
+            #shape of the rectangle with text
+            pad_x = 15
+            pad_y = 12
 
             label_x = x1
-            # Obliczamy bezpieczną pozycję pionową, uwzględniając powiększone tło
+            # calculating position of the label text
             label_y = max(lbl_h + pad_y * 4, y1)
 
-            # Współrzędne lewego górnego rogu prostokąta tła
+            # coordinates of up left corner of the label text
             bg_x1 = label_x
             bg_y1 = label_y - lbl_h - (pad_y * 4)
 
-            # Współrzędne prawego dolnego rogu prostokąta tła
+            # coordinates of down right corner of the label text
             bg_x2 = min(label_x + lbl_w + (pad_x * 4), w - 1)
             bg_y2 = label_y
 
-            # 1. Rysowanie czarnego tła (wypełniony prostokąt)
+            # drawing black background rectangle for the label text
             cv2.rectangle(img, (bg_x1, bg_y1), (bg_x2, bg_y2), label_bg, -1)
 
-            # 2. Rysowanie obwódki wokół tła (z grubością dopasowaną do ogólnej grubości linii)
+            # drawing the rectangle outline
             border_thickness = max(1, thickness - 1)
             cv2.rectangle(img, (bg_x1, bg_y1), (bg_x2, bg_y2), box_color, border_thickness)
 
