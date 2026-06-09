@@ -239,11 +239,11 @@ class FaceDatabase:
         )
         return self._cursor.fetchall()
 
-    def exists_in_db(self, image_path: str, dataset: int = 1) -> bool:
-        """Check if a face image path is already in the database."""
-        self._cursor.execute("SELECT 1 FROM faces WHERE image_path = ? AND dataset_id = ?"
-                             , (image_path, dataset))
-        return self._cursor.fetchone() is not None
+    # def exists_in_db(self, image_path: str, dataset: int = 1) -> bool:
+    #     """Check if a face image path is already in the database."""
+    #     self._cursor.execute("SELECT 1 FROM faces WHERE image_path = ? AND dataset_id = ?"
+    #                          , (image_path, dataset))
+    #     return self._cursor.fetchone() is not None
 
     def clear_database(self, dataset: int = 1) -> None:
         """Delete all face and processed-image records."""
@@ -271,51 +271,51 @@ class FaceDatabase:
                              (dataset, ) )
         self._conn.commit()
 
-    def mark_as_test(self, dataset:int , fids: list)->None:
-        """Flag all currently additional data as test samples."""
-        for fid in fids:
-            self._cursor.execute("UPDATE faces SET is_test = 1 WHERE dataset_id = ? AND face_id = ?",
-                             (dataset, fid) )
-        self._conn.commit()
+    # def mark_as_test(self, dataset:int , fids: list)->None:
+    #     """Flag all currently additional data as test samples."""
+    #     for fid in fids:
+    #         self._cursor.execute("UPDATE faces SET is_test = 1 WHERE dataset_id = ? AND face_id = ?",
+    #                          (dataset, fid) )
+    #     self._conn.commit()
+    #
+    # def get_label_by_id(self, face_id:str, dataset: int = 1) -> str:
+    #     """Return the current label for `face_id`, preferring manual labels."""
+    #     query = "SELECT COALESCE(manual_label, svm_prediction) FROM faces WHERE face_id = ? AND dataset_id = ?"
+    #     self._cursor.execute(query, (face_id, dataset))
+    #
+    #     result = self._cursor.fetchone()
+    #     return result[0] if result and result[0] else "Unknown"
 
-    def get_label_by_id(self, face_id:str, dataset: int = 1) -> str:
-        """Return the current label for `face_id`, preferring manual labels."""
-        query = "SELECT COALESCE(manual_label, svm_prediction) FROM faces WHERE face_id = ? AND dataset_id = ?"
-        self._cursor.execute(query, (face_id, dataset))
-
-        result = self._cursor.fetchone()
-        return result[0] if result and result[0] else "Unknown"
-
-    def rename_face_record(self, old_face_id: str, new_face_id: str, new_image_path: str, dataset: int = 1) -> str:
-        """Rename record and update path.
-
-        Returns one of: `updated`, `missing_old`, `collision`.
-        """
-        self._cursor.execute("SELECT 1 FROM faces WHERE face_id = ? AND dataset_id = ?",
-                             (old_face_id,dataset, ))
-        if not self._cursor.fetchone():
-            return "missing_old"
-
-        if old_face_id == new_face_id:
-            self._cursor.execute(
-                "UPDATE faces SET image_path = ? WHERE face_id = ? AND dataset_id = ?",
-                (new_image_path, old_face_id, dataset),
-            )
-            self._conn.commit()
-            return "updated"
-
-        self._cursor.execute("SELECT 1 FROM faces WHERE face_id = ? AND dataset_id = ?",
-                             (new_face_id,dataset))
-        if self._cursor.fetchone():
-            return "collision"
-
-        self._cursor.execute(
-            """UPDATE faces SET face_id = ?, image_path = ? , ground_truth_label = ? 
-            WHERE face_id = ? AND dataset_id = ?""",
-            (new_face_id, new_image_path, self.get_gt_from_path(new_image_path), old_face_id, dataset),
-        )
-        self._conn.commit()
-        return "updated"
+    # def rename_face_record(self, old_face_id: str, new_face_id: str, new_image_path: str, dataset: int = 1) -> str:
+    #     """Rename record and update path.
+    #
+    #     Returns one of: `updated`, `missing_old`, `collision`.
+    #     """
+    #     self._cursor.execute("SELECT 1 FROM faces WHERE face_id = ? AND dataset_id = ?",
+    #                          (old_face_id,dataset, ))
+    #     if not self._cursor.fetchone():
+    #         return "missing_old"
+    #
+    #     if old_face_id == new_face_id:
+    #         self._cursor.execute(
+    #             "UPDATE faces SET image_path = ? WHERE face_id = ? AND dataset_id = ?",
+    #             (new_image_path, old_face_id, dataset),
+    #         )
+    #         self._conn.commit()
+    #         return "updated"
+    #
+    #     self._cursor.execute("SELECT 1 FROM faces WHERE face_id = ? AND dataset_id = ?",
+    #                          (new_face_id,dataset))
+    #     if self._cursor.fetchone():
+    #         return "collision"
+    #
+    #     self._cursor.execute(
+    #         """UPDATE faces SET face_id = ?, image_path = ? , ground_truth_label = ?
+    #         WHERE face_id = ? AND dataset_id = ?""",
+    #         (new_face_id, new_image_path, self.get_gt_from_path(new_image_path), old_face_id, dataset),
+    #     )
+    #     self._conn.commit()
+    #     return "updated"
 
 
     def rebuild_db_from_files(self, dataset: int = 1)->None:
@@ -334,18 +334,18 @@ class FaceDatabase:
         self._conn.commit()
         print(f"Labels cleared in {updated_rows} records.")
 
-    def test_rebuild_db_from_files(self, dataset: int = 1)->None:
-        print("Clearing DB fields: manual_labels and predictions...")
-        self._cursor.execute(
-            """
-            UPDATE faces
-            SET svm_prediction = NULL
-            WHERE svm_prediction IS NOT NULL AND dataset_id = ?
-            """, (dataset,)
-        )
-        updated_rows = self._cursor.rowcount
-        self._conn.commit()
-        print(f"Labels cleared in {updated_rows} records.")
+    # def test_rebuild_db_from_files(self, dataset: int = 1)->None:
+    #     print("Clearing DB fields: manual_labels and predictions...")
+    #     self._cursor.execute(
+    #         """
+    #         UPDATE faces
+    #         SET svm_prediction = NULL
+    #         WHERE svm_prediction IS NOT NULL AND dataset_id = ?
+    #         """, (dataset,)
+    #     )
+    #     updated_rows = self._cursor.rowcount
+    #     self._conn.commit()
+    #     print(f"Labels cleared in {updated_rows} records.")
 
 
     @staticmethod

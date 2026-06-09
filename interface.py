@@ -178,9 +178,9 @@ class FaceInterface(QMainWindow):
         layout.addWidget(self.progress_container)
 
         controls = QHBoxLayout()
-        btn_refresh = QPushButton("Odśwież widok")
-        btn_refresh.clicked.connect(lambda: print("Refreshing..."))
-        controls.addWidget(btn_refresh)
+        # btn_refresh = QPushButton("Odśwież widok")
+        # btn_refresh.clicked.connect(lambda: print("Refreshing..."))
+        # controls.addWidget(btn_refresh)
 
         self.btn_generate_visualization = QPushButton("Generuj wizualizacje")
         self.btn_generate_visualization.setEnabled(False)
@@ -236,22 +236,22 @@ class FaceInterface(QMainWindow):
             return "manual"
         return "cancel"
 
-    def ask_for_preprocessing_type(self, dataset: int = 1)-> str:
-        """Ask the user which type of embeddings should be used."""
-        msg = QMessageBox()
-        msg.setWindowTitle("Wybor reprezentacji wektorow twarzy")
-        msg.setText(f"Wybierz sposob przetwarzania zdjęć twarzy w zbiorze danych nr. {dataset}:")
-        hog_embds = msg.addButton("HOG (Podstawowe)", QMessageBox.ActionRole)
-        neural_network_cv2 = msg.addButton("Siec neuronowa (zaawanasowane)", QMessageBox.ActionRole) # neural network + face alignment
-        msg.addButton("Anuluj", QMessageBox.RejectRole)
-
-        msg.exec_()
-
-        if msg.clickedButton() == hog_embds:
-            return "hog"
-        if msg.clickedButton() == neural_network_cv2:
-            return "neural_network"
-        return "cancel"
+    # def ask_for_preprocessing_type(self, dataset: int = 1)-> str:
+    #     """Ask the user which type of embeddings should be used."""
+    #     msg = QMessageBox()
+    #     msg.setWindowTitle("Wybor reprezentacji wektorow twarzy")
+    #     msg.setText(f"Wybierz sposob przetwarzania zdjęć twarzy w zbiorze danych nr. {dataset}:")
+    #     hog_embds = msg.addButton("HOG (Podstawowe)", QMessageBox.ActionRole)
+    #     neural_network_cv2 = msg.addButton("Siec neuronowa (zaawanasowane)", QMessageBox.ActionRole) # neural network + face alignment
+    #     msg.addButton("Anuluj", QMessageBox.RejectRole)
+    #
+    #     msg.exec_()
+    #
+    #     if msg.clickedButton() == hog_embds:
+    #         return "hog"
+    #     if msg.clickedButton() == neural_network_cv2:
+    #         return "neural_network"
+    #     return "cancel"
 
     def ask_for_classifier(self) -> str:
         """Ask the user which type of embeddings should be used."""
@@ -273,22 +273,22 @@ class FaceInterface(QMainWindow):
             return "VGG_face"
         return "cancel"
 
-    def ask_for_face_alignment(self)->str:
-        """Ask the user which type of embeddings should be used."""
-        msg = QMessageBox()
-        msg.setWindowTitle("Kalibracja linii oczu")
-        msg.setText("Czy chcesz zastosowac kalibrację linii oczu w poziomie")
-        yes = msg.addButton("Tak", QMessageBox.ActionRole)
-        no = msg.addButton("Nie", QMessageBox.ActionRole)
-        msg.addButton("Anuluj", QMessageBox.RejectRole)
-
-        msg.exec_()
-
-        if msg.clickedButton() == yes:
-            return "yes"
-        if msg.clickedButton() == no:
-            return "no"
-        return "cancel"
+    # def ask_for_face_alignment(self)->str:
+    #     """Ask the user which type of embeddings should be used."""
+    #     msg = QMessageBox()
+    #     msg.setWindowTitle("Kalibracja linii oczu")
+    #     msg.setText("Czy chcesz zastosowac kalibrację linii oczu w poziomie")
+    #     yes = msg.addButton("Tak", QMessageBox.ActionRole)
+    #     no = msg.addButton("Nie", QMessageBox.ActionRole)
+    #     msg.addButton("Anuluj", QMessageBox.RejectRole)
+    #
+    #     msg.exec_()
+    #
+    #     if msg.clickedButton() == yes:
+    #         return "yes"
+    #     if msg.clickedButton() == no:
+    #         return "no"
+    #     return "cancel"
 
     def ask_for_scan_dataset_id(self, title:str, comment:str) -> int:
         msg = QMessageBox()

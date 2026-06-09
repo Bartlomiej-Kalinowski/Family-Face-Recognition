@@ -119,9 +119,9 @@ class FacePreprocessor:
 
         return embedding.flatten().astype(np.float32)
 
-    def close(self) -> None:
-        """Close the Face Alignment object."""
-        self.face_landmarker.close()
+    # def close(self) -> None:
+    #     """Close the Face Alignment object."""
+    #     self.face_landmarker.close()
 
     @staticmethod
     def recompute_one_embedding(face_image_path: str) -> np.ndarray | None:
@@ -291,7 +291,7 @@ class FaceClusterer:
     def get_face_clusters(self, embeddings: np.ndarray, fids: list) -> dict:
         """Group unlabeled embeddings using DBSCAN with cosine distance."""
 
-        dbscan = DBSCAN(eps=0.23, min_samples=1, metric="cosine")
+        dbscan = DBSCAN(eps=0.5, min_samples=1, metric="cosine")
 
         labels = dbscan.fit_predict(embeddings)
 

@@ -112,7 +112,7 @@ class SmartLabelerController:
         selected_fids, name = None, None
         faces_verified = self.ui.bulk_verify_faces(id_path_pairs)
         if faces_verified is not None:
-            selected_fids, nam = faces_verified
+            selected_fids, name = faces_verified
 
         if not selected_fids or not name:
             return
@@ -203,9 +203,10 @@ class SmartLabelerController:
         # number of manual labels after DBSCAN
         faces_labeled = self.db.get_labeled_data_for_train(dataset=self.dataset)
         labeled_count = len(set(label for _, label, _ in faces_labeled))
+        print(labeled_count)
         ready_for_training = labeled_count >= 2
         if not ready_for_training:
-            print("Too less train different labels (min. 2 required), to start SVM prediction!")
+            print("Too less train different labels (min. 2 required), to start the prediction!")
         return {"ready_for_training": ready_for_training, "labeled_count": labeled_count}
 
     def calculate_mean_labels_group_size_and_limit_group_size(self, train_data : list) -> list:
@@ -415,10 +416,10 @@ class SmartLabelerController:
 
         print(f"\n[SUKCES] Ewaluacja zakończona. Accuracy: {acc:.2%}")
 
-        # database and interface actualization
+        # database and interface update
         # saving prediction to database (fid -> name)
         for fid, pred in zip(fids, y_pred):
-            self.db.set_svm_prediction(fid, pred, dataset=self.dataset)
+            self.db.set_prediction(fid, pred, dataset=self.dataset)
 
         # making list for GUI: (fid, "Imie (... %)") lub (fid, "Imie")
         classified_for_ui = []
@@ -438,7 +439,7 @@ class SmartLabelerController:
 
     def app_pipeline(self) -> None:
         """Manage clustering -> classification -> evaluation using explicit returns."""
-        classifier_type = self.ui.ask_for_classifier(self.dataset)
+        classifier_type = self.ui.ask_for_classifier()
 
         #-------------clustering and labeling by user------------------------
         is_vgg = False

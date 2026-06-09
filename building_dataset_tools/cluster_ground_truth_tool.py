@@ -165,7 +165,7 @@ class GroundTruthClusterTool:
             self._rename_face_and_sync(fid, safe_label)
             written += 1
 
-            # Odswiezanie GUI co kilka iteracji lub na koncu
+            # refresh GUI once per few iterations or at the end
             if idx % 5 == 0 or idx == total:
                 self.ui.update_progress(idx, total, f"Zapisywanie: {clean_label}", )
                 QApplication.processEvents()
