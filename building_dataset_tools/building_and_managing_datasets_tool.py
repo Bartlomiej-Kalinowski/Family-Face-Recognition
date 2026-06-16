@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from ml_engine import FaceExtractor, FaceClusterer, FacePreprocessor
+from ml_engine import FaceClusterer, FacePreprocessor
 
 import os
 import re
 import shutil
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QMessageBox, QInputDialog, QDialog, QVBoxLayout, QLineEdit, QLabel, QCheckBox, \
+from PyQt5.QtWidgets import QApplication, QMessageBox, QInputDialog, QDialog, QVBoxLayout, QLabel, QCheckBox, \
     QFrame, QScrollArea, QWidget, QGridLayout, QPushButton
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap

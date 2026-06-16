@@ -19,8 +19,6 @@ class Config:
 
     ANNOTATED_FACES_DIR = os.path.join(OUTPUT_DIR, "annotated_faces")
     FACES_DIR = os.path.join(OUTPUT_DIR, "extracted_faces")
-    # FACES_DIR_2 = os.path.join(OUTPUT_DIR, "extracted_faces_2")
-    # FACES_DIR_3 = os.path.join(OUTPUT_DIR, "extracted_faces_3")
     DB_PATH = os.path.join(OUTPUT_DIR, "face_metadata.db")
 
     FACE_SIZE = (128, 128)

@@ -178,9 +178,6 @@ class FaceInterface(QMainWindow):
         layout.addWidget(self.progress_container)
 
         controls = QHBoxLayout()
-        # btn_refresh = QPushButton("Odśwież widok")
-        # btn_refresh.clicked.connect(lambda: print("Refreshing..."))
-        # controls.addWidget(btn_refresh)
 
         self.btn_generate_visualization = QPushButton("Generuj wizualizacje")
         self.btn_generate_visualization.setEnabled(False)
@@ -236,22 +233,6 @@ class FaceInterface(QMainWindow):
             return "manual"
         return "cancel"
 
-    # def ask_for_preprocessing_type(self, dataset: int = 1)-> str:
-    #     """Ask the user which type of embeddings should be used."""
-    #     msg = QMessageBox()
-    #     msg.setWindowTitle("Wybor reprezentacji wektorow twarzy")
-    #     msg.setText(f"Wybierz sposob przetwarzania zdjęć twarzy w zbiorze danych nr. {dataset}:")
-    #     hog_embds = msg.addButton("HOG (Podstawowe)", QMessageBox.ActionRole)
-    #     neural_network_cv2 = msg.addButton("Siec neuronowa (zaawanasowane)", QMessageBox.ActionRole) # neural network + face alignment
-    #     msg.addButton("Anuluj", QMessageBox.RejectRole)
-    #
-    #     msg.exec_()
-    #
-    #     if msg.clickedButton() == hog_embds:
-    #         return "hog"
-    #     if msg.clickedButton() == neural_network_cv2:
-    #         return "neural_network"
-    #     return "cancel"
 
     def ask_for_classifier(self) -> str:
         """Ask the user which type of embeddings should be used."""
@@ -273,22 +254,6 @@ class FaceInterface(QMainWindow):
             return "VGG_face"
         return "cancel"
 
-    # def ask_for_face_alignment(self)->str:
-    #     """Ask the user which type of embeddings should be used."""
-    #     msg = QMessageBox()
-    #     msg.setWindowTitle("Kalibracja linii oczu")
-    #     msg.setText("Czy chcesz zastosowac kalibrację linii oczu w poziomie")
-    #     yes = msg.addButton("Tak", QMessageBox.ActionRole)
-    #     no = msg.addButton("Nie", QMessageBox.ActionRole)
-    #     msg.addButton("Anuluj", QMessageBox.RejectRole)
-    #
-    #     msg.exec_()
-    #
-    #     if msg.clickedButton() == yes:
-    #         return "yes"
-    #     if msg.clickedButton() == no:
-    #         return "no"
-    #     return "cancel"
 
     def ask_for_scan_dataset_id(self, title:str, comment:str) -> int:
         msg = QMessageBox()
@@ -431,34 +396,6 @@ class FaceInterface(QMainWindow):
 
         return None
 
-    # def show_startup_progress(self, total):
-    #     """Show modal progress dialog used during startup operations."""
-    #     self.progress_dialog = QProgressDialog("Analizowanie bazy...", "Anuluj", 0, total)
-    #     self.progress_dialog.setWindowModality(Qt.ApplicationModal)
-    #     self.progress_dialog.show()
-
-    # def update_startup_progress(self, value, text):
-    #     """Update startup dialog progress and text if the dialog exists."""
-    #     if hasattr(self, "progress_dialog"):
-    #         self.progress_dialog.setValue(value)
-    #         self.progress_dialog.setLabelText(text)
-    #         QApplication.processEvents()
-
-    # def close_startup_progress(self):
-    #     """Close startup progress dialog if it was created."""
-    #     if hasattr(self, "progress_dialog"):
-    #         self.progress_dialog.close()
-
-    # def start_scanning(self) -> None:
-    #     """Run initial scanning and stream updates into the progress widgets."""
-    #
-    #     def update_bar(current, total, text):
-    #         self.progressBar.setMaximum(total)
-    #         self.progressBar.setValue(current)
-    #         self.statusLabel.setText(text)
-    #         self.app.processEvents()
-    #
-    #     self.controller.run_initial_scan(progress_callback=update_bar)
 
     def update_progress(self, current: int, total: int, message: str = "") -> None:
         """Update main progress bar with percentage and optional status message."""

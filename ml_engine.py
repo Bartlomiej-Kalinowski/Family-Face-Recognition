@@ -245,11 +245,9 @@ class FacePreprocessor:
 class FaceExtractor:
     """Detect faces with YOLO model"""
 
-    def __init__(self, config: "Config", db: FaceDatabase, dataset_id: int):
+    def __init__(self, config: "Config"):
         self.config = config
         self.detector = YOLO(config.YOLO_MODEL_PATH)
-        self.db = db
-        self.dataset = dataset_id
 
 
     def extract_face_data(self, image_path: str) -> list:

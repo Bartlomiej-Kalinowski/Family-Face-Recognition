@@ -32,7 +32,7 @@ class SmartLabelerController:
         self.ui.set_visualize_callback(self._on_generate_visualization_clicked)
         self.dataset = self.ui.ask_for_scan_dataset_id("Zbiory danych", "Wybierz zestaw danych:")
 
-        self.extractor = FaceExtractor(self.config, self.db, self.dataset) # face detector and extractor initialization
+        self.extractor = FaceExtractor(self.config) # face detector and extractor initialization
         self.preprocessor = FacePreprocessor(self.dataset, self.db,  self.config)
         self.classifier = FaceClusterer()
 
@@ -602,12 +602,13 @@ class SmartLabelerController:
                 continue
 
             bbox_height = max(1, y2 - y1)
-            font_scale = max(2.0 , min(0.85, bbox_height / 180))
-            font_thickness = max(1.0, int(round(font_scale * 2.5)))
+            font_scale = max(2.6 , min(0.85, bbox_height / 180))
+            font_thickness = max(1.3, int(round(font_scale * 2.5)))
 
             cv2.rectangle(img, (x1, y1), (x2, y2), box_color, thickness)
 
-            source_tag = "[MANUAL]" if bool(is_manual) else "[PREDICTION]"
+            # source_tag = "[MANUAL]" if bool(is_manual) else "[PREDICTION]"
+            source_tag = ""
             label_text = f"{source_tag} {str(label or 'Unknown').upper()}"
 
             (lbl_w, lbl_h), _ = cv2.getTextSize(label_text, font, font_scale, int(font_thickness))
